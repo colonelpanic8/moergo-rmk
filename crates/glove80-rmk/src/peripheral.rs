@@ -20,11 +20,6 @@ mod keyboard_peripheral {
         crate::lighting::init_peripheral(p.SPI3, p.P0_13, p.P0_19)
     }
 
-    #[register_processor(runnable)]
-    fn lighting_output_activity() {
-        crate::lighting::lighting_output_activity()
-    }
-
     /// Render the native priority layer edge without waiting for bulk
     /// application traffic.
     #[register_processor(event)]

@@ -90,11 +90,6 @@ mod keyboard_central {
         )
     }
 
-    #[register_processor(runnable)]
-    fn lighting_output_activity() {
-        crate::lighting::lighting_output_activity()
-    }
-
     /// Type-erased Rynk requests are translated into the standard engine's
     /// authoritative command mailbox here.
     #[register_processor(runnable)]

@@ -2,7 +2,6 @@
 
 use core::cell::Cell;
 use core::num::NonZeroU32;
-use core::sync::atomic::{AtomicBool, Ordering};
 
 use embassy_nrf::gpio::{Level, Output, OutputDrive, Pin};
 use embassy_nrf::peripherals::{PWM0, SPI3};
@@ -13,8 +12,8 @@ use embassy_sync::blocking_mutex::Mutex as BlockingMutex;
 use embassy_time::{Duration, Timer};
 use rmk::core_traits::Runnable;
 use rmk::event::{
-    EventSubscriber, KeyboardEvent, KeyboardEventPos, LayerChangeEvent, LightingChangedEvent,
-    MaintenanceModeEvent, SleepStateEvent, SubscribableEvent,
+    EventSubscriber, KeyboardEvent, KeyboardEventPos, LayerChangeEvent, MaintenanceModeEvent,
+    SleepStateEvent, SubscribableEvent,
 };
 use rmk::lighting::compositor::{Contribution, LightingSource, RenderInput};
 use rmk::lighting::topology::{LedSlot, MatrixPosition};
@@ -153,7 +152,6 @@ pub type CoreMailbox = LightingMailbox<
 >;
 
 pub static CORE_MAILBOX: CoreMailbox = LightingMailbox::new();
-static LIGHTING_OUTPUT_ACTIVE: AtomicBool = AtomicBool::new(false);
 pub static REPLICA_SLOT: StandardReplicaSlot<OVERLAY_CAPACITY, SCENE_CAPACITY> =
     StandardReplicaSlot::new();
 
@@ -508,33 +506,6 @@ impl MaintenanceLightingState {
     }
 }
 
-pub struct LightingOutputActivity;
-
-pub const fn lighting_output_activity() -> LightingOutputActivity {
-    LightingOutputActivity
-}
-
-impl LightingOutputActivity {
-    async fn refresh(&self) {
-        if let Ok(StandardReply::State(state)) =
-            CORE_MAILBOX.request(StandardCommand::ReadState).await
-        {
-            LIGHTING_OUTPUT_ACTIVE.store(state.output_enabled, Ordering::Relaxed);
-        }
-    }
-}
-
-impl Runnable for LightingOutputActivity {
-    async fn run(&mut self) -> ! {
-        let mut changes = LightingChangedEvent::subscriber();
-        self.refresh().await;
-        loop {
-            changes.next_event().await;
-            self.refresh().await;
-        }
-    }
-}
-
 /// Feed pressed keys to the typing-reactive PaletteFx effects. Key
 /// positions arrive in the local event bus's coordinates:
 /// board-wide on the central (the split driver re-publishes peripheral keys
@@ -585,7 +556,7 @@ impl ReactiveKeyHits {
     }
 
     async fn on_keyboard_event(&mut self, event: KeyboardEvent) {
-        if !event.pressed || !LIGHTING_OUTPUT_ACTIVE.load(Ordering::Relaxed) {
+        if !event.pressed {
             return;
         }
         let KeyboardEventPos::Key(pos) = event.pos else {
@@ -959,10 +930,7 @@ impl PeripheralReplication {
             return;
         };
         if let crate::split_lighting::Message::EffectHit { slot } = message {
-            if LIGHTING_OUTPUT_ACTIVE.load(Ordering::Relaxed)
-                && slot.index() < LEDS_PER_HALF
-                && HIT_QUEUE.record(slot.0 as u8)
-            {
+            if slot.index() < LEDS_PER_HALF && HIT_QUEUE.record(slot.0 as u8) {
                 CORE_MAILBOX.snapshot_changed();
             }
             return;
