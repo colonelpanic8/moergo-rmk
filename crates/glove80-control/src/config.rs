@@ -550,8 +550,10 @@ async fn read_macro_space(client: &Client) -> Result<Vec<u8>> {
             .checked_add(u16::try_from(chunk.data.len()).context("macro chunk too large")?)
             .context("macro space offset overflowed")?;
     }
-    // Trailing padding is not part of any sequence.
-    while space.last() == Some(&0) {
+    // Trailing padding is not part of any sequence, but retain the final zero:
+    // it terminates the last encoded macro and belongs to the logical macro
+    // space compared against a configuration snapshot.
+    while space.ends_with(&[0, 0]) {
         space.pop();
     }
     Ok(space)
