@@ -198,6 +198,11 @@ pub struct MorseProfileConfig {
     pub prior_idle_ms: Option<u16>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub unilateral_tap: Option<bool>,
+    /// Arm the hold at its timeout, but emit it only when the next key is on
+    /// the opposite hand (or is tagged bilateral). Same-hand ordinary keys
+    /// settle this tap-hold as a tap regardless of how long it was held.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub opposite_hand_hold: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub retro_tap: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -278,6 +283,8 @@ pub struct MorseConfig {
     /// to declare each key's hand.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub unilateral_tap: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub opposite_hand_hold: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub retro_tap: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1117,6 +1124,9 @@ impl BehaviorConfig {
 
 impl MorseProfileConfig {
     fn to_wire(&self) -> Result<MorseProfile> {
+        if self.unilateral_tap == Some(true) && self.opposite_hand_hold == Some(true) {
+            bail!("unilateral_tap and opposite_hand_hold are mutually exclusive");
+        }
         let mode = match self.mode.as_deref() {
             None => None,
             Some("normal") => Some(MorseMode::Normal),
@@ -1133,6 +1143,7 @@ impl MorseProfileConfig {
             .with_quick_tap_timeout_ms(self.quick_tap_ms)
             .with_prior_idle_time_ms(self.prior_idle_ms)
             .with_unilateral_tap(self.unilateral_tap)
+            .with_opposite_hand_hold(self.opposite_hand_hold)
             .with_retro_tap(self.retro_tap)
             .with_hold_trigger_on_release(self.hold_trigger_on_release))
     }
@@ -1146,6 +1157,7 @@ impl MorseProfileConfig {
             quick_tap_ms: profile.quick_tap_timeout_ms(),
             prior_idle_ms: profile.prior_idle_time_ms(),
             unilateral_tap: profile.unilateral_tap(),
+            opposite_hand_hold: profile.opposite_hand_hold(),
             retro_tap: profile.retro_tap(),
             hold_trigger_on_release: profile.hold_trigger_on_release(),
             hold_trigger_key_positions: Vec::new(),
@@ -1207,6 +1219,9 @@ impl MorseConfig {
     pub(crate) fn to_wire(&self) -> Result<Morse> {
         use rynk::rmk_types::morse::{DOUBLE_TAP, HOLD, HOLD_AFTER_TAP, TAP};
 
+        if self.unilateral_tap == Some(true) && self.opposite_hand_hold == Some(true) {
+            bail!("unilateral_tap and opposite_hand_hold are mutually exclusive");
+        }
         let mode = match self.mode.as_deref() {
             None => None,
             Some("normal") => Some(MorseMode::Normal),
@@ -1222,6 +1237,7 @@ impl MorseConfig {
             .with_quick_tap_timeout_ms(self.quick_tap_ms)
             .with_prior_idle_time_ms(self.prior_idle_ms)
             .with_unilateral_tap(self.unilateral_tap)
+            .with_opposite_hand_hold(self.opposite_hand_hold)
             .with_retro_tap(self.retro_tap)
             .with_hold_trigger_on_release(self.hold_trigger_on_release);
 
@@ -1264,6 +1280,7 @@ impl MorseConfig {
             quick_tap_ms: morse.profile.quick_tap_timeout_ms(),
             prior_idle_ms: morse.profile.prior_idle_time_ms(),
             unilateral_tap: morse.profile.unilateral_tap(),
+            opposite_hand_hold: morse.profile.opposite_hand_hold(),
             retro_tap: morse.profile.retro_tap(),
             hold_trigger_on_release: morse.profile.hold_trigger_on_release(),
             mode: morse.profile.mode().map(|mode| {
@@ -2805,6 +2822,7 @@ mod tests {
             MorseProfileConfig {
                 index: Some(7),
                 hold_timeout_ms: Some(170),
+                opposite_hand_hold: Some(true),
                 ..MorseProfileConfig::default()
             },
         );
@@ -2833,6 +2851,7 @@ mod tests {
             .unwrap();
         assert!(text.contains("[behavior.morse.profiles.alpha]"));
         assert!(text.contains("index = 7"));
+        assert!(text.contains("opposite_hand_hold = true"));
         assert_eq!(
             RuntimeConfig::from_toml(&text).unwrap().snapshot().unwrap(),
             snapshot
@@ -2858,6 +2877,27 @@ mod tests {
             .unwrap_err()
             .to_string()
             .contains("index 3 is assigned more than once"));
+    }
+
+    #[test]
+    fn hand_policies_are_mutually_exclusive() {
+        let mut config = minimal_runtime_config(None);
+        let mut behavior = BehaviorConfig::default();
+        behavior.morse.profiles.insert(
+            "hrm".to_owned(),
+            MorseProfileConfig {
+                unilateral_tap: Some(true),
+                opposite_hand_hold: Some(true),
+                ..MorseProfileConfig::default()
+            },
+        );
+        config.behavior = Some(behavior);
+
+        assert!(config
+            .snapshot()
+            .unwrap_err()
+            .to_string()
+            .contains("unilateral_tap and opposite_hand_hold are mutually exclusive"));
     }
 
     #[test]
