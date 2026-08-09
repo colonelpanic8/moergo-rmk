@@ -90,11 +90,6 @@ mod keyboard_central {
     }
 
     #[register_processor(runnable)]
-    fn lighting_output_activity() {
-        crate::lighting::lighting_output_activity()
-    }
-
-    #[register_processor(runnable)]
     fn lighting_rynk_adapter() {
         crate::central_lighting::rynk_adapter()
     }

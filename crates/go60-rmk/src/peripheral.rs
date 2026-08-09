@@ -23,11 +23,6 @@ mod keyboard_peripheral {
     }
 
     #[register_processor(runnable)]
-    fn lighting_output_activity() {
-        crate::lighting::lighting_output_activity()
-    }
-
-    #[register_processor(runnable)]
     fn trackpad_device() {
         crate::trackpad::init(
             crate::trackpad::RIGHT_DEVICE_ID,
