@@ -15,13 +15,14 @@ use glove80_config::{
     EffectsConfig, LightingSnapshot, OutputModeConfig, ParamSpec, RuntimeConfig, Snapshot, COLS,
     LAYER_SIZE, ROWS,
 };
+use rynk::rmk_types::morse::MorseProfileName;
 use rynk::rmk_types::protocol::rynk::{
     BleName, Cmd, LightingError, LightingExtendedConditionalSceneCell, LightingExtensionNameKind,
-    LightingExtensionParamsRequest, LightingFeatureFlags, LightingMutableState, RynkError,
-    SetAutoMouseLayerConfigsRequest, SetKeymapBulkRequest, SetLightingExtensionLayersRequest,
-    SetLightingExtensionParamRequest, SetLightingExtensionStateRequest,
-    SetLightingLayerPolicyRequest, SetLightingOutputModeRequest, SetLightingStateRequest,
-    SetMorseHoldTriggerPositionsRequest,
+    LightingExtensionParamsRequest, LightingFeatureFlags, LightingMutableState,
+    MorseProfileEntry as WireMorseProfileEntry, RynkError, SetAutoMouseLayerConfigsRequest,
+    SetKeymapBulkRequest, SetLightingExtensionLayersRequest, SetLightingExtensionParamRequest,
+    SetLightingExtensionStateRequest, SetLightingLayerPolicyRequest, SetLightingOutputModeRequest,
+    SetLightingStateRequest, SetMorseHoldTriggerPositionsRequest, SetMorseProfileEntryRequest,
 };
 use rynk::{Client, RynkHostError};
 
@@ -459,20 +460,48 @@ async fn read_behaviors(client: &Client) -> Result<BehaviorSnapshot> {
                     })
                     .collect::<Vec<_>>()
             });
-    let mut morse_profiles = client.read_all_morse_profiles().await.ok();
-    if let (Some(profiles), Some(options)) = (&mut morse_profiles, options) {
-        let required = hold_trigger_positions
-            .as_deref()
-            .unwrap_or_default()
-            .iter()
-            .filter(|position| position.profile != u8::MAX)
-            .map(|position| usize::from(position.profile) + 1)
-            .max()
-            .unwrap_or_default();
-        while profiles.len() > required && profiles.last() == Some(&options.morse_default_profile) {
-            profiles.pop();
+    let morse_profiles = match client.read_morse_profile_state().await {
+        Ok(state) => Some(
+            state
+                .entries
+                .into_iter()
+                .map(|entry| glove80_config::MorseProfileEntry {
+                    index: entry.index,
+                    name: entry.name.as_str().to_owned(),
+                    profile: entry.profile,
+                })
+                .collect(),
+        ),
+        Err(_) => {
+            let mut profiles = client.read_all_morse_profiles().await.ok();
+            if let (Some(profiles), Some(options)) = (&mut profiles, options) {
+                let required = hold_trigger_positions
+                    .as_deref()
+                    .unwrap_or_default()
+                    .iter()
+                    .filter(|position| position.profile != u8::MAX)
+                    .map(|position| usize::from(position.profile) + 1)
+                    .max()
+                    .unwrap_or_default();
+                while profiles.len() > required
+                    && profiles.last() == Some(&options.morse_default_profile)
+                {
+                    profiles.pop();
+                }
+            }
+            profiles.map(|profiles| {
+                profiles
+                    .into_iter()
+                    .enumerate()
+                    .map(|(index, profile)| glove80_config::MorseProfileEntry {
+                        index: index as u8,
+                        name: format!("profile_{index:03}"),
+                        profile,
+                    })
+                    .collect()
+            })
         }
-    }
+    };
     Ok(BehaviorSnapshot {
         config: client.get_behavior().await.ok(),
         options,
@@ -579,24 +608,75 @@ async fn apply_behaviors(
         }
     }
     if let Some(profiles) = &desired.morse_profiles {
-        let mut profiles = profiles.clone();
-        if let Some(default_profile) = desired
-            .options
-            .or(before.options)
-            .map(|options| options.morse_default_profile)
-        {
-            profiles.resize(
-                profiles
-                    .len()
-                    .max(before.morse_profiles.as_deref().unwrap_or_default().len()),
-                default_profile,
-            );
-        }
         if before.morse_profiles.as_deref() != Some(profiles.as_slice()) {
-            client
-                .write_all_morse_profiles(profiles)
-                .await
-                .context("could not write morse profiles")?;
+            let mut writes = 0usize;
+            let mut unsupported = false;
+            for entry in profiles {
+                if before
+                    .morse_profiles
+                    .as_deref()
+                    .unwrap_or_default()
+                    .iter()
+                    .any(|old| old == entry)
+                {
+                    continue;
+                }
+                let name = MorseProfileName::try_from(entry.name.as_str()).map_err(|_| {
+                    anyhow::anyhow!("morse profile name '{}' is too long", entry.name)
+                })?;
+                if let Err(error) = client
+                    .set_morse_profile_entry(SetMorseProfileEntryRequest {
+                        entry: WireMorseProfileEntry {
+                            index: entry.index,
+                            name,
+                            profile: entry.profile,
+                        },
+                    })
+                    .await
+                {
+                    if writes == 0 && params_unsupported(&error) {
+                        unsupported = true;
+                        break;
+                    }
+                    return Err(error).context("could not write named morse profile");
+                }
+                writes += 1;
+            }
+            if !unsupported {
+                for old in before.morse_profiles.as_deref().unwrap_or_default() {
+                    if profiles.iter().any(|entry| entry.index == old.index) {
+                        continue;
+                    }
+                    if let Err(error) = client.delete_morse_profile(old.index).await {
+                        if writes == 0 && params_unsupported(&error) {
+                            unsupported = true;
+                            break;
+                        }
+                        return Err(error).context("could not delete named morse profile");
+                    }
+                    writes += 1;
+                }
+            }
+            if unsupported {
+                let default_profile = desired
+                    .options
+                    .or(before.options)
+                    .map(|options| options.morse_default_profile)
+                    .context("older firmware needs a default morse profile")?;
+                let length = profiles
+                    .iter()
+                    .map(|entry| usize::from(entry.index) + 1)
+                    .max()
+                    .unwrap_or_default();
+                let mut dense = vec![default_profile; length];
+                for entry in profiles {
+                    dense[usize::from(entry.index)] = entry.profile;
+                }
+                client
+                    .write_all_morse_profiles(dense)
+                    .await
+                    .context("could not write morse profiles")?;
+            }
         }
     }
     if let Some(positions) = &desired.hold_trigger_positions {

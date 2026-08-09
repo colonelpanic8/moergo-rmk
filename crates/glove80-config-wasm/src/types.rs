@@ -9,11 +9,11 @@ use rynk::rmk_types::action::KeyAction;
 use rynk::rmk_types::auto_mouse::AutoMouseLayerConfig;
 use rynk::rmk_types::combo::Combo;
 use rynk::rmk_types::fork::Fork;
-use rynk::rmk_types::morse::{Morse, MorseProfile};
+use rynk::rmk_types::morse::Morse;
 use rynk::rmk_types::protocol::rynk::{
     BehaviorConfig as WireBehaviorConfig, BehaviorOptions, LightingBackgroundState,
     LightingExtendedConditionalSceneCell, LightingExtensionParam, LightingExtensionState,
-    LightingLayerPolicy, LightingOutputMode, LightingSceneCell,
+    LightingLayerPolicy, LightingOutputMode, LightingSceneCell, MorseProfileEntry,
 };
 use serde::{Deserialize, Serialize};
 use tsify::Tsify;
@@ -95,7 +95,7 @@ pub struct RuntimeSnapshot {
 pub struct BehaviorSnapshot {
     pub config: Option<WireBehaviorConfig>,
     pub options: Option<BehaviorOptions>,
-    pub morse_profiles: Option<Vec<MorseProfile>>,
+    pub morse_profiles: Option<Vec<MorseProfileEntry>>,
     pub hold_trigger_positions: Option<Vec<HoldTriggerPosition>>,
     pub auto_mouse_layers: Option<Vec<AutoMouseLayerConfig>>,
     pub morses: Option<Vec<Morse>>,

@@ -7,7 +7,7 @@ use rynk::rmk_types::action::{Action, KeyAction};
 use rynk::rmk_types::auto_mouse::AutoMouseLayerConfig as WireAutoMouseLayerConfig;
 use rynk::rmk_types::ble::BleState as WireBleState;
 use rynk::rmk_types::combo::Combo;
-use rynk::rmk_types::morse::{Morse, MorseMode, MorseProfile};
+use rynk::rmk_types::morse::{Morse, MorseMode, MorseProfile, MORSE_PROFILE_NAME_MAX_LEN};
 use rynk::rmk_types::protocol::rynk::{
     BehaviorConfig as WireBehaviorConfig, BehaviorOptions as WireBehaviorOptions,
     LightingActiveTransport, LightingBackgroundMode, LightingBackgroundState,
@@ -29,6 +29,18 @@ pub struct HoldTriggerPosition {
     pub profile: u8,
     pub row: u8,
     pub col: u8,
+}
+
+/// One occupied, stable runtime morse-profile slot.
+///
+/// Names belong to the managed configuration rather than the timing value,
+/// while `index` is what key actions and hold-trigger positions persist.  Both
+/// therefore have to cross the file/device snapshot boundary together.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MorseProfileEntry {
+    pub index: u8,
+    pub name: String,
+    pub profile: MorseProfile,
 }
 
 #[derive(Debug)]
@@ -170,6 +182,10 @@ impl Default for MorseBehaviorConfig {
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct MorseProfileConfig {
+    /// Stable runtime slot. Omitted profiles are assigned the lowest free slot
+    /// in name order for backwards compatibility with the original format.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub index: Option<u8>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub enable_flow_tap: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -637,7 +653,7 @@ pub struct Snapshot {
 pub struct BehaviorSnapshot {
     pub config: Option<WireBehaviorConfig>,
     pub options: Option<WireBehaviorOptions>,
-    pub morse_profiles: Option<Vec<MorseProfile>>,
+    pub morse_profiles: Option<Vec<MorseProfileEntry>>,
     pub hold_trigger_positions: Option<Vec<HoldTriggerPosition>>,
     pub auto_mouse_layers: Option<Vec<WireAutoMouseLayerConfig>>,
     pub morses: Option<Vec<rynk::rmk_types::morse::Morse>>,
@@ -671,6 +687,62 @@ pub struct LightingSnapshot {
     pub conditional_scenes: Option<Vec<ConditionalSceneConfig>>,
 }
 
+fn resolve_morse_profiles(behavior: &BehaviorConfig) -> Result<Vec<MorseProfileEntry>> {
+    let mut occupied = [false; u8::MAX as usize];
+    for (name, config) in &behavior.morse.profiles {
+        if name.is_empty() {
+            bail!("morse profile names must not be empty");
+        }
+        if name.len() > MORSE_PROFILE_NAME_MAX_LEN {
+            bail!(
+                "morse profile name '{name}' is {} bytes, but runtime names are limited to {MORSE_PROFILE_NAME_MAX_LEN} bytes",
+                name.len()
+            );
+        }
+        if let Some(index) = config.index {
+            if index == u8::MAX {
+                bail!("morse profile '{name}' uses reserved index {index}");
+            }
+            if std::mem::replace(&mut occupied[usize::from(index)], true) {
+                bail!("morse profile index {index} is assigned more than once");
+            }
+        }
+    }
+
+    let mut entries = Vec::with_capacity(behavior.morse.profiles.len());
+    for (name, config) in &behavior.morse.profiles {
+        let index = match config.index {
+            Some(index) => index,
+            None => {
+                let index = occupied
+                    .iter()
+                    .position(|used| !used)
+                    .context("more than 255 morse profiles")?;
+                occupied[index] = true;
+                index as u8
+            }
+        };
+        entries.push(MorseProfileEntry {
+            index,
+            name: name.clone(),
+            profile: config.to_wire()?,
+        });
+    }
+    entries.sort_by_key(|entry| entry.index);
+    Ok(entries)
+}
+
+fn profile_names_by_slot(entries: &[MorseProfileEntry]) -> Vec<String> {
+    let Some(last) = entries.iter().map(|entry| entry.index).max() else {
+        return Vec::new();
+    };
+    let mut names = vec![String::new(); usize::from(last) + 1];
+    for entry in entries {
+        names[usize::from(entry.index)] = entry.name.clone();
+    }
+    names
+}
+
 impl RuntimeConfig {
     /// Deserialize and validate runtime TOML. Validation is exactly what
     /// [`Self::snapshot`] checks, so a config that parses here is one a
@@ -695,11 +767,13 @@ impl RuntimeConfig {
                 );
             }
         }
-        let profile_names = self
+        let morse_profiles = self
             .behavior
             .as_ref()
-            .map(|behavior| behavior.morse.profiles.keys().cloned().collect::<Vec<_>>())
+            .map(resolve_morse_profiles)
+            .transpose()?
             .unwrap_or_default();
+        let profile_names = profile_names_by_slot(&morse_profiles);
         let mut ids = BTreeMap::new();
         let mut layers = Vec::with_capacity(self.layers.len());
         for (index, layer) in self.layers.iter().enumerate() {
@@ -770,16 +844,7 @@ impl RuntimeConfig {
             behaviors: BehaviorSnapshot {
                 config: behavior.map(BehaviorConfig::wire_config),
                 options: behavior.map(BehaviorConfig::wire_options).transpose()?,
-                morse_profiles: behavior
-                    .map(|behavior| {
-                        behavior
-                            .morse
-                            .profiles
-                            .values()
-                            .map(MorseProfileConfig::to_wire)
-                            .collect::<Result<Vec<_>>>()
-                    })
-                    .transpose()?,
+                morse_profiles: behavior.map(|_| morse_profiles.clone()),
                 hold_trigger_positions: behavior.map(|behavior| {
                     let mut positions = behavior
                         .morse
@@ -791,10 +856,11 @@ impl RuntimeConfig {
                             col: *col,
                         })
                         .collect::<Vec<_>>();
-                    for (profile, config) in behavior.morse.profiles.values().enumerate() {
+                    for entry in &morse_profiles {
+                        let config = &behavior.morse.profiles[&entry.name];
                         positions.extend(config.hold_trigger_key_positions.iter().map(
                             |[row, col]| HoldTriggerPosition {
-                                profile: profile as u8,
+                                profile: entry.index,
                                 row: *row,
                                 col: *col,
                             },
@@ -867,14 +933,14 @@ impl RuntimeConfig {
     }
 
     pub fn from_snapshot(snapshot: &Snapshot, labels: Option<&RuntimeConfig>) -> Self {
-        let behavior = BehaviorConfig::from_snapshot(
-            &snapshot.behaviors,
-            labels.and_then(|config| config.behavior.as_ref()),
+        let behavior = BehaviorConfig::from_snapshot(&snapshot.behaviors);
+        let profile_names = profile_names_by_slot(
+            snapshot
+                .behaviors
+                .morse_profiles
+                .as_deref()
+                .unwrap_or_default(),
         );
-        let profile_names = behavior
-            .as_ref()
-            .map(|behavior| behavior.morse.profiles.keys().cloned().collect::<Vec<_>>())
-            .unwrap_or_default();
         let layers = snapshot
             .layers
             .iter()
@@ -999,7 +1065,7 @@ impl BehaviorConfig {
         })
     }
 
-    fn from_snapshot(snapshot: &BehaviorSnapshot, labels: Option<&Self>) -> Option<Self> {
+    fn from_snapshot(snapshot: &BehaviorSnapshot) -> Option<Self> {
         let config = snapshot.config?;
         let options = snapshot.options?;
         let default_profile = MorseProfileConfig::from_wire(options.morse_default_profile);
@@ -1007,38 +1073,16 @@ impl BehaviorConfig {
             .hold_trigger_positions
             .as_deref()
             .unwrap_or_default();
-        let profile_count = snapshot
-            .morse_profiles
-            .as_deref()
-            .unwrap_or_default()
-            .len()
-            .max(
-                hold_trigger_positions
-                    .iter()
-                    .filter(|position| position.profile != u8::MAX)
-                    .map(|position| usize::from(position.profile) + 1)
-                    .max()
-                    .unwrap_or_default(),
-            );
         let mut profiles = BTreeMap::new();
-        for index in 0..profile_count {
-            let profile = snapshot
-                .morse_profiles
-                .as_deref()
-                .and_then(|profiles| profiles.get(index))
-                .copied()
-                .unwrap_or(options.morse_default_profile);
-            let name = labels
-                .and_then(|behavior| behavior.morse.profiles.keys().nth(index))
-                .cloned()
-                .unwrap_or_else(|| format!("profile_{index:03}"));
-            let mut config = MorseProfileConfig::from_wire(profile);
+        for entry in snapshot.morse_profiles.as_deref().unwrap_or_default() {
+            let mut config = MorseProfileConfig::from_wire(entry.profile);
+            config.index = Some(entry.index);
             config.hold_trigger_key_positions = hold_trigger_positions
                 .iter()
-                .filter(|position| usize::from(position.profile) == index)
+                .filter(|position| position.profile == entry.index)
                 .map(|position| [position.row, position.col])
                 .collect();
-            profiles.insert(name, config);
+            profiles.insert(entry.name.clone(), config);
         }
         Some(Self {
             combo_timeout_ms: config.combo_timeout_ms,
@@ -1095,6 +1139,7 @@ impl MorseProfileConfig {
 
     fn from_wire(profile: MorseProfile) -> Self {
         Self {
+            index: None,
             enable_flow_tap: profile.enable_flow_tap(),
             hold_timeout_ms: profile.hold_timeout_ms(),
             gap_timeout_ms: profile.gap_timeout_ms(),
@@ -2749,6 +2794,70 @@ mod tests {
             morse.profiles["hrm_left"].hold_trigger_key_positions,
             vec![[2, 1], [3, 2]]
         );
+    }
+
+    #[test]
+    fn named_sparse_profile_slots_survive_a_toml_round_trip() {
+        let mut config = minimal_runtime_config(None);
+        let mut behavior = BehaviorConfig::default();
+        behavior.morse.profiles.insert(
+            "alpha".to_owned(),
+            MorseProfileConfig {
+                index: Some(7),
+                hold_timeout_ms: Some(170),
+                ..MorseProfileConfig::default()
+            },
+        );
+        behavior.morse.profiles.insert(
+            "zeta".to_owned(),
+            MorseProfileConfig {
+                index: Some(2),
+                hold_timeout_ms: Some(230),
+                ..MorseProfileConfig::default()
+            },
+        );
+        config.behavior = Some(behavior);
+
+        let snapshot = config.snapshot().unwrap();
+        let entries = snapshot.behaviors.morse_profiles.as_deref().unwrap();
+        assert_eq!(
+            entries
+                .iter()
+                .map(|entry| (entry.index, entry.name.as_str()))
+                .collect::<Vec<_>>(),
+            vec![(2, "zeta"), (7, "alpha")]
+        );
+
+        let text = RuntimeConfig::from_snapshot(&snapshot, None)
+            .to_toml()
+            .unwrap();
+        assert!(text.contains("[behavior.morse.profiles.alpha]"));
+        assert!(text.contains("index = 7"));
+        assert_eq!(
+            RuntimeConfig::from_toml(&text).unwrap().snapshot().unwrap(),
+            snapshot
+        );
+    }
+
+    #[test]
+    fn duplicate_profile_slots_are_rejected() {
+        let mut config = minimal_runtime_config(None);
+        let mut behavior = BehaviorConfig::default();
+        for name in ["alpha", "zeta"] {
+            behavior.morse.profiles.insert(
+                name.to_owned(),
+                MorseProfileConfig {
+                    index: Some(3),
+                    ..MorseProfileConfig::default()
+                },
+            );
+        }
+        config.behavior = Some(behavior);
+        assert!(config
+            .snapshot()
+            .unwrap_err()
+            .to_string()
+            .contains("index 3 is assigned more than once"));
     }
 
     #[test]

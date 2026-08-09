@@ -7,7 +7,8 @@
 //! only rearranges values.
 
 use glove80_config as model;
-use rynk::rmk_types::protocol::rynk::LightingExtensionState;
+use rynk::rmk_types::morse::MorseProfileName;
+use rynk::rmk_types::protocol::rynk::{LightingExtensionState, MorseProfileEntry};
 
 use crate::types::{
     BehaviorSnapshot, EffectParamWrite, ExtensionCatalog, HoldTriggerPosition, LightingSnapshot,
@@ -75,7 +76,16 @@ pub fn snapshot_from_wire(
         behaviors: model::BehaviorSnapshot {
             config: snapshot.behaviors.config,
             options: snapshot.behaviors.options,
-            morse_profiles: snapshot.behaviors.morse_profiles.clone(),
+            morse_profiles: snapshot.behaviors.morse_profiles.as_ref().map(|entries| {
+                entries
+                    .iter()
+                    .map(|entry| model::MorseProfileEntry {
+                        index: entry.index,
+                        name: entry.name.as_str().to_owned(),
+                        profile: entry.profile,
+                    })
+                    .collect()
+            }),
             hold_trigger_positions: snapshot.behaviors.hold_trigger_positions.as_ref().map(
                 |positions| {
                     positions
@@ -174,7 +184,30 @@ pub fn snapshot_to_wire(
         behaviors: BehaviorSnapshot {
             config: snapshot.behaviors.config,
             options: snapshot.behaviors.options,
-            morse_profiles: snapshot.behaviors.morse_profiles.clone(),
+            morse_profiles: snapshot
+                .behaviors
+                .morse_profiles
+                .as_ref()
+                .map(|entries| {
+                    entries
+                        .iter()
+                        .map(|entry| {
+                            Ok(MorseProfileEntry {
+                                index: entry.index,
+                                name: MorseProfileName::try_from(entry.name.as_str()).map_err(
+                                    |_| {
+                                        anyhow::anyhow!(
+                                            "morse profile name '{}' is too long",
+                                            entry.name
+                                        )
+                                    },
+                                )?,
+                                profile: entry.profile,
+                            })
+                        })
+                        .collect::<anyhow::Result<Vec<_>>>()
+                })
+                .transpose()?,
             hold_trigger_positions: snapshot.behaviors.hold_trigger_positions.as_ref().map(
                 |positions| {
                     positions
