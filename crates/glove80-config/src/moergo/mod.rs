@@ -236,7 +236,7 @@ pub fn import_moergo_layout(text: &str) -> Result<ImportedLayout> {
     let combos = wire_combos
         .iter()
         .enumerate()
-        .map(|(index, combo)| crate::ComboConfig::from_wire(combo, index))
+        .map(|(index, combo)| crate::ComboConfig::from_wire(combo, index, &[]))
         .collect();
     let macros = crate::MacroConfig::all_from_wire(&lowering.macros().concat());
     let forks = lowering

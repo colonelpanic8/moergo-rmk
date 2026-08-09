@@ -831,7 +831,7 @@ impl RuntimeConfig {
                             .enumerate()
                             .map(|(index, combo)| {
                                 combo
-                                    .to_wire()
+                                    .to_wire(&profile_names)
                                     .with_context(|| format!("[[combo]] {index} ({})", combo.name))
                             })
                             .collect::<Result<Vec<_>>>()
@@ -917,7 +917,7 @@ impl RuntimeConfig {
                 .iter()
                 .enumerate()
                 .map(|(index, combo)| {
-                    let mut config = ComboConfig::from_wire(combo, index);
+                    let mut config = ComboConfig::from_wire(combo, index, &profile_names);
                     if let Some(old) = labels.and_then(|config| config.combos.get(index)) {
                         config.name = old.name.clone();
                     }
@@ -1315,11 +1315,10 @@ fn modifier_list_from_wire(
 }
 
 impl ComboConfig {
-    pub(crate) fn to_wire(&self) -> Result<Combo> {
+    pub(crate) fn to_wire(&self, profile_names: &[String]) -> Result<Combo> {
         let mut actions = heapless::Vec::new();
         for key in &self.keys {
-            let action =
-                crate::rynk_keycode::from_via_keycode(crate::keycodes::parse_keycode(key)?);
+            let action = parse_key_action(key, profile_names)?;
             actions
                 .push(action)
                 .map_err(|_| anyhow::anyhow!("more keys than a combo can hold"))?;
@@ -1336,15 +1335,13 @@ impl ComboConfig {
         })
     }
 
-    pub(crate) fn from_wire(combo: &Combo, index: usize) -> Self {
+    pub(crate) fn from_wire(combo: &Combo, index: usize, profile_names: &[String]) -> Self {
         Self {
             name: format!("combo {index}"),
             keys: combo
                 .actions
                 .iter()
-                .map(|action| {
-                    crate::keycodes::format_keycode(crate::rynk_keycode::to_via_keycode(*action))
-                })
+                .map(|action| render_key_action(*action, profile_names))
                 .collect(),
             output: crate::keycodes::format_keycode(crate::rynk_keycode::to_via_keycode(
                 combo.output,
@@ -2682,6 +2679,26 @@ mod tests {
         assert!(matches!(parsed[4], KeyAction::TapHold(_, _, 0)));
         let rendered = render_key_actions(&parsed, &profiles);
         assert_eq!(parse_key_actions(&rendered, &profiles).unwrap(), parsed);
+    }
+
+    #[test]
+    fn combo_triggers_preserve_parameterized_tap_holds() {
+        let profiles = vec!["autoshift".to_owned(), "thumb".to_owned()];
+        let config = ComboConfig {
+            name: "auto F11".to_owned(),
+            keys: vec![
+                "TH(KC_0, LSFT(KC_0), autoshift)".to_owned(),
+                "LT(4, KC_BSPC, thumb)".to_owned(),
+            ],
+            output: "KC_F11".to_owned(),
+            layer: Some(2),
+        };
+
+        let wire = config.to_wire(&profiles).unwrap();
+        assert!(matches!(wire.actions[0], KeyAction::TapHold(_, _, 0)));
+        assert!(matches!(wire.actions[1], KeyAction::TapHold(_, _, 1)));
+        let rebuilt = ComboConfig::from_wire(&wire, 0, &profiles);
+        assert_eq!(rebuilt.keys, config.keys);
     }
 
     #[test]
