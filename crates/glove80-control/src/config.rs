@@ -12,9 +12,8 @@ use glove80_config::{
     conditional_scene_to_wire, differences, effects_from_wire, effects_to_wire, live_param_tables,
     output_mode_from_wire, output_mode_to_wire, params_to_writes, runtime_config_from_moergo_json,
     scene_from_wire, scene_policy_from_wire, scene_policy_to_wire, scene_to_wire,
-    snapshot_to_moergo_json, trim_trailing_transparent_layers, BehaviorSnapshot, EffectParams,
-    EffectsConfig, LightingSnapshot, OutputModeConfig, ParamSpec, RuntimeConfig, Snapshot, COLS,
-    LAYER_SIZE, ROWS,
+    snapshot_to_moergo_json, BehaviorSnapshot, EffectParams, EffectsConfig, LightingSnapshot,
+    OutputModeConfig, ParamSpec, RuntimeConfig, Snapshot,
 };
 use rynk::rmk_types::morse::MorseProfileName;
 use rynk::rmk_types::protocol::rynk::{
@@ -254,12 +253,11 @@ pub async fn operate(client: &Client, command: &ConfigCommand) -> Result<()> {
 
 async fn read_snapshot(client: &Client) -> Result<Snapshot> {
     let capabilities = client.get_capabilities().await?;
-    if capabilities.num_rows != ROWS || capabilities.num_cols != COLS {
-        bail!(
-            "expected a {ROWS}x{COLS} Glove80, device reports {}x{}",
-            capabilities.num_rows,
-            capabilities.num_cols
-        );
+    let rows = capabilities.num_rows;
+    let cols = capabilities.num_cols;
+    let layer_size = usize::from(rows) * usize::from(cols);
+    if layer_size == 0 {
+        bail!("device reports an empty {rows}x{cols} matrix");
     }
     // The bulk read is an optimization, so a device that advertises it but
     // cannot deliver a decodable response falls back to reading key by key
@@ -281,8 +279,8 @@ async fn read_snapshot(client: &Client) -> Result<Snapshot> {
         None => {
             let mut actions = Vec::new();
             for layer in 0..capabilities.num_layers {
-                for row in 0..ROWS {
-                    for col in 0..COLS {
+                for row in 0..rows {
+                    for col in 0..cols {
                         actions.push(client.get_key(layer, row, col).await?);
                     }
                 }
@@ -290,11 +288,10 @@ async fn read_snapshot(client: &Client) -> Result<Snapshot> {
             actions
         }
     };
-    let mut layers = actions
-        .chunks(LAYER_SIZE)
+    let layers = actions
+        .chunks(layer_size)
         .map(|actions| actions.to_vec())
         .collect::<Vec<_>>();
-    trim_trailing_transparent_layers(&mut layers);
 
     let lighting_caps = client.get_lighting_capabilities().await?;
     let state = client.get_lighting_state().await?;
@@ -378,6 +375,8 @@ async fn read_snapshot(client: &Client) -> Result<Snapshot> {
         (None, None)
     };
     Ok(Snapshot {
+        rows,
+        cols,
         bluetooth_name: client
             .get_ble_name()
             .await
@@ -386,6 +385,7 @@ async fn read_snapshot(client: &Client) -> Result<Snapshot> {
         default_layer: client.get_default_layer().await?,
         layers,
         behaviors: read_behaviors(client).await?,
+        pointing: optional_endpoint(client.get_pointing_config().await)?,
         lighting: Some(LightingSnapshot {
             brightness: state.output_brightness,
             output_mode,
@@ -491,23 +491,20 @@ fn params_unsupported(error: &RynkHostError) -> bool {
 const MACRO_CHUNK: usize = rynk::rmk_types::constants::MACRO_DATA_SIZE;
 
 async fn read_behaviors(client: &Client) -> Result<BehaviorSnapshot> {
-    let options = client.get_behavior_options().await.ok();
+    let capabilities = client.get_capabilities().await?;
+    let options = optional_endpoint(client.get_behavior_options().await)?;
     let hold_trigger_positions =
-        client
-            .get_morse_hold_trigger_positions()
-            .await
-            .ok()
-            .map(|state| {
-                state
-                    .positions
-                    .into_iter()
-                    .map(|position| glove80_config::HoldTriggerPosition {
-                        profile: position.profile,
-                        row: position.row,
-                        col: position.col,
-                    })
-                    .collect::<Vec<_>>()
-            });
+        optional_endpoint(client.get_morse_hold_trigger_positions().await)?.map(|state| {
+            state
+                .positions
+                .into_iter()
+                .map(|position| glove80_config::HoldTriggerPosition {
+                    profile: position.profile,
+                    row: position.row,
+                    col: position.col,
+                })
+                .collect::<Vec<_>>()
+        });
     let morse_profiles = match client.read_morse_profile_state().await {
         Ok(state) => Some(
             state
@@ -520,8 +517,8 @@ async fn read_behaviors(client: &Client) -> Result<BehaviorSnapshot> {
                 })
                 .collect(),
         ),
-        Err(_) => {
-            let mut profiles = client.read_all_morse_profiles().await.ok();
+        Err(error) if endpoint_unsupported(&error) => {
+            let mut profiles = optional_endpoint(client.read_all_morse_profiles().await)?;
             if let (Some(profiles), Some(options)) = (&mut profiles, options) {
                 let required = hold_trigger_positions
                     .as_deref()
@@ -549,22 +546,53 @@ async fn read_behaviors(client: &Client) -> Result<BehaviorSnapshot> {
                     .collect()
             })
         }
+        Err(error) => return Err(error.into()),
+    };
+    let combos = if capabilities.max_combos == 0 {
+        None
+    } else {
+        Some(client.read_all_combo_definitions().await?)
     };
     Ok(BehaviorSnapshot {
-        config: client.get_behavior().await.ok(),
+        config: optional_endpoint(client.get_behavior().await)?,
         options,
         morse_profiles,
         hold_trigger_positions,
-        auto_mouse_layers: client
-            .get_auto_mouse_layer_configs()
-            .await
-            .ok()
+        auto_mouse_layers: optional_endpoint(client.get_auto_mouse_layer_configs().await)?
             .map(|state| state.configs),
-        morses: client.read_all_morses().await.ok(),
-        combos: client.read_all_combos().await.ok(),
-        macros: read_macro_space(client).await.ok(),
-        forks: read_all_forks(client).await.ok(),
+        morses: if capabilities.max_morse > 0 {
+            Some(client.read_all_morses().await?)
+        } else {
+            None
+        },
+        combos,
+        macros: if capabilities.macro_space_size > 0 {
+            Some(read_macro_space(client).await?)
+        } else {
+            None
+        },
+        forks: if capabilities.max_forks > 0 {
+            Some(read_all_forks(client).await?)
+        } else {
+            None
+        },
     })
+}
+
+fn endpoint_unsupported(error: &RynkHostError) -> bool {
+    matches!(
+        error,
+        RynkHostError::Rejected(RynkError::UnknownCmd | RynkError::Unimplemented)
+            | RynkHostError::Unsupported(..)
+    )
+}
+
+fn optional_endpoint<T>(result: std::result::Result<T, RynkHostError>) -> Result<Option<T>> {
+    match result {
+        Ok(value) => Ok(Some(value)),
+        Err(error) if endpoint_unsupported(&error) => Ok(None),
+        Err(error) => Err(error.into()),
+    }
 }
 
 /// Read the fork table a slot at a time.
@@ -780,18 +808,13 @@ async fn apply_behaviors(
     if let Some(combos) = &desired.combos {
         let mut combos = combos.clone();
         let held = last_populated(before.combos.as_deref().unwrap_or_default(), |combo| {
-            combo.output != rynk::rmk_types::action::KeyAction::No
+            !combo.is_empty()
         });
-        // An unprogrammed combo triggers on nothing and outputs nothing.
-        let empty = rynk::rmk_types::combo::Combo {
-            actions: Default::default(),
-            output: rynk::rmk_types::action::KeyAction::No,
-            layer: None,
-        };
+        let empty = rynk::rmk_types::combo::ComboDefinition::empty();
         combos.resize(combos.len().max(held), empty);
         if before.combos.as_deref() != Some(combos.as_slice()) {
             client
-                .write_all_combos(combos)
+                .write_all_combo_definitions(combos)
                 .await
                 .context("could not write the combo table")?;
         }
@@ -871,8 +894,8 @@ async fn write_layer(
             let offset = page * per_page;
             let request = SetKeymapBulkRequest {
                 layer,
-                start_row: (offset / usize::from(COLS)) as u8,
-                start_col: (offset % usize::from(COLS)) as u8,
+                start_row: (offset / usize::from(capabilities.num_cols)) as u8,
+                start_col: (offset % usize::from(capabilities.num_cols)) as u8,
                 actions: chunk.to_vec(),
             };
             client
@@ -884,8 +907,8 @@ async fn write_layer(
     }
 
     for (offset, action) in actions.iter().copied().enumerate() {
-        let row = (offset / usize::from(COLS)) as u8;
-        let col = (offset % usize::from(COLS)) as u8;
+        let row = (offset / usize::from(capabilities.num_cols)) as u8;
+        let col = (offset % usize::from(capabilities.num_cols)) as u8;
         client
             .set_key(layer, row, col, action)
             .await
@@ -896,6 +919,15 @@ async fn write_layer(
 
 async fn apply_snapshot(client: &Client, desired: &Snapshot, before: &Snapshot) -> Result<()> {
     let capabilities = client.get_capabilities().await?;
+    if desired.rows != capabilities.num_rows || desired.cols != capabilities.num_cols {
+        bail!(
+            "configuration is {}x{}, but device reports {}x{}",
+            desired.rows,
+            desired.cols,
+            capabilities.num_rows,
+            capabilities.num_cols
+        );
+    }
     if desired.layers.len() > usize::from(capabilities.num_layers) {
         bail!(
             "configuration has {} layers but device supports {}",
@@ -930,14 +962,11 @@ async fn apply_snapshot(client: &Client, desired: &Snapshot, before: &Snapshot) 
     // writes layer by layer rather than handing the whole keymap to
     // `write_all_keymap`.
     for layer in 0..u8::try_from(desired.layers.len()).context("too many configured layers")? {
-        let wanted = desired.layers.get(usize::from(layer)).map_or(
-            [rynk::rmk_types::action::KeyAction::No; LAYER_SIZE].as_slice(),
-            |keys| keys.as_slice(),
-        );
-        let present = before.layers.get(usize::from(layer)).map_or(
-            [rynk::rmk_types::action::KeyAction::No; LAYER_SIZE].as_slice(),
-            |keys| keys.as_slice(),
-        );
+        let wanted = &desired.layers[usize::from(layer)];
+        let present = before
+            .layers
+            .get(usize::from(layer))
+            .map_or(&[][..], Vec::as_slice);
         if wanted == present {
             continue;
         }
@@ -945,6 +974,19 @@ async fn apply_snapshot(client: &Client, desired: &Snapshot, before: &Snapshot) 
     }
     if desired.default_layer != before.default_layer {
         client.set_default_layer(desired.default_layer).await?;
+    }
+    if let Some(wanted) = desired.pointing {
+        let differs = before.pointing.as_ref().is_none_or(|present| {
+            wanted.devices() != present.devices() || wanted.overrides() != present.overrides()
+        });
+        if differs {
+            let mut next = wanted;
+            next.revision = before.pointing.map_or(0, |present| present.revision);
+            client
+                .set_pointing_config(next)
+                .await
+                .context("could not write pointing configuration")?;
+        }
     }
 
     if let Some(wanted) = &desired.lighting {

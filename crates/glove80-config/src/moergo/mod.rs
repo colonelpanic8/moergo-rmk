@@ -236,7 +236,13 @@ pub fn import_moergo_layout(text: &str) -> Result<ImportedLayout> {
     let combos = wire_combos
         .iter()
         .enumerate()
-        .map(|(index, combo)| crate::ComboConfig::from_wire(combo, index, &[]))
+        .map(|(index, combo)| {
+            crate::ComboConfig::from_wire(
+                &rynk::rmk_types::combo::ComboDefinition::Actions(combo.clone()),
+                index,
+                &[],
+            )
+        })
         .collect();
     let macros = crate::MacroConfig::all_from_wire(&lowering.macros().concat());
     let forks = lowering
@@ -247,6 +253,8 @@ pub fn import_moergo_layout(text: &str) -> Result<ImportedLayout> {
         .collect();
 
     let config = RuntimeConfig {
+        rows: crate::ROWS,
+        cols: crate::COLS,
         bluetooth_name: None,
         default_layer: 0,
         layers: converted,
@@ -255,6 +263,7 @@ pub fn import_moergo_layout(text: &str) -> Result<ImportedLayout> {
         macros,
         forks,
         behavior: None,
+        pointing: None,
         lighting: None,
     };
     config.snapshot()?;

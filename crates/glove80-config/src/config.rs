@@ -6,8 +6,12 @@ use anyhow::{bail, Context, Result};
 use rynk::rmk_types::action::{Action, KeyAction};
 use rynk::rmk_types::auto_mouse::AutoMouseLayerConfig as WireAutoMouseLayerConfig;
 use rynk::rmk_types::ble::BleState as WireBleState;
-use rynk::rmk_types::combo::Combo;
+use rynk::rmk_types::combo::{Combo, ComboDefinition, MatrixPosition, PositionCombo};
 use rynk::rmk_types::morse::{Morse, MorseMode, MorseProfile, MORSE_PROFILE_NAME_MAX_LEN};
+use rynk::rmk_types::pointing::{
+    CaretConfig as WireCaretConfig, CursorConfig as WireCursorConfig, DragConfig as WireDragConfig,
+    PointingMode, ScrollConfig as WireScrollConfig, SniperConfig as WireSniperConfig,
+};
 use rynk::rmk_types::protocol::rynk::{
     BehaviorConfig as WireBehaviorConfig, BehaviorOptions as WireBehaviorOptions,
     LightingActiveTransport, LightingBackgroundMode, LightingBackgroundState,
@@ -15,7 +19,9 @@ use rynk::rmk_types::protocol::rynk::{
     LightingConditionSet, LightingConditionalSceneCell, LightingConnectionCondition,
     LightingEffect, LightingEffectsCondition, LightingExtendedConditionalSceneCell,
     LightingExtensionState, LightingLayerCondition, LightingLayerPolicy, LightingLedId,
-    LightingNodeId, LightingOutputMode, LightingRgb8, LightingSceneCell, BLE_NAME_MAX_LEN,
+    LightingNodeId, LightingOutputMode, LightingRgb8, LightingSceneCell,
+    PointingConfig as WirePointingConfig, PointingDeviceConfig as WirePointingDeviceConfig,
+    PointingLayerOverride as WirePointingLayerOverride, BLE_NAME_MAX_LEN,
 };
 use serde::{Deserialize, Serialize};
 
@@ -23,6 +29,22 @@ pub const ROWS: u8 = 6;
 pub const COLS: u8 = 14;
 pub const LAYER_SIZE: usize = ROWS as usize * COLS as usize;
 pub const HOLES: [usize; 4] = [5, 8, 75, 78];
+
+const fn default_rows() -> u8 {
+    ROWS
+}
+
+const fn default_cols() -> u8 {
+    COLS
+}
+
+fn is_default_rows(value: &u8) -> bool {
+    *value == ROWS
+}
+
+fn is_default_cols(value: &u8) -> bool {
+    *value == COLS
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct HoldTriggerPosition {
@@ -56,6 +78,12 @@ impl std::error::Error for DiffFound {}
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct RuntimeConfig {
+    /// Logical matrix dimensions. The Glove80 defaults are omitted from
+    /// serialized files; sibling boards such as Go60 declare their shape.
+    #[serde(default = "default_rows", skip_serializing_if = "is_default_rows")]
+    pub rows: u8,
+    #[serde(default = "default_cols", skip_serializing_if = "is_default_cols")]
+    pub cols: u8,
     /// BLE advertising name. `{slot}` expands to the one-based active profile.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bluetooth_name: Option<String>,
@@ -76,8 +104,133 @@ pub struct RuntimeConfig {
     pub forks: Vec<ForkConfig>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub behavior: Option<BehaviorConfig>,
+    /// Persisted pointing-device policy. An absent section leaves it alone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pointing: Option<PointingConfig>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lighting: Option<LightingConfig>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct PointingConfig {
+    #[serde(default, rename = "device", skip_serializing_if = "Vec::is_empty")]
+    pub devices: Vec<PointingDeviceConfig>,
+    #[serde(default, rename = "override", skip_serializing_if = "Vec::is_empty")]
+    pub overrides: Vec<PointingLayerOverride>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct PointingDeviceConfig {
+    pub device_id: u8,
+    #[serde(flatten)]
+    pub mode: PointingModeConfig,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct PointingLayerOverride {
+    pub layer: u8,
+    pub device_id: u8,
+    #[serde(flatten)]
+    pub mode: PointingModeConfig,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(tag = "mode", rename_all = "snake_case")]
+pub enum PointingModeConfig {
+    Cursor {
+        #[serde(default = "one")]
+        multiplier_x: u8,
+        #[serde(default = "one")]
+        multiplier_y: u8,
+        #[serde(default)]
+        invert_x: bool,
+        #[serde(default)]
+        invert_y: bool,
+    },
+    Scroll {
+        #[serde(default = "one")]
+        multiplier_x: u8,
+        #[serde(default = "eight")]
+        divisor_x: u8,
+        #[serde(default = "one")]
+        multiplier_y: u8,
+        #[serde(default = "eight")]
+        divisor_y: u8,
+        #[serde(default)]
+        invert_x: bool,
+        #[serde(default)]
+        invert_y: bool,
+    },
+    Sniper {
+        #[serde(default = "one")]
+        multiplier: u8,
+        #[serde(default = "four")]
+        divisor: u8,
+        #[serde(default)]
+        invert_x: bool,
+        #[serde(default)]
+        invert_y: bool,
+    },
+    Caret {
+        #[serde(default)]
+        disable_x: bool,
+        #[serde(default)]
+        disable_y: bool,
+        #[serde(default)]
+        invert_x: bool,
+        #[serde(default)]
+        invert_y: bool,
+        #[serde(default = "hundred")]
+        threshold: i16,
+        #[serde(default = "up_keycode")]
+        keycode_up: u8,
+        #[serde(default = "down_keycode")]
+        keycode_down: u8,
+        #[serde(default = "left_keycode")]
+        keycode_left: u8,
+        #[serde(default = "right_keycode")]
+        keycode_right: u8,
+    },
+    Drag {
+        #[serde(default = "one")]
+        multiplier_x: u8,
+        #[serde(default = "one")]
+        multiplier_y: u8,
+        #[serde(default)]
+        invert_x: bool,
+        #[serde(default)]
+        invert_y: bool,
+        #[serde(default = "one")]
+        toggled_by: u8,
+        #[serde(default = "one")]
+        latches: u8,
+    },
+}
+
+const fn one() -> u8 {
+    1
+}
+const fn four() -> u8 {
+    4
+}
+const fn eight() -> u8 {
+    8
+}
+const fn hundred() -> i16 {
+    100
+}
+const fn up_keycode() -> u8 {
+    rynk::rmk_types::keycode::HidKeyCode::Up as u8
+}
+const fn down_keycode() -> u8 {
+    rynk::rmk_types::keycode::HidKeyCode::Down as u8
+}
+const fn left_keycode() -> u8 {
+    rynk::rmk_types::keycode::HidKeyCode::Left as u8
+}
+const fn right_keycode() -> u8 {
+    rynk::rmk_types::keycode::HidKeyCode::Right as u8
 }
 
 /// Global and parameterized behavior state managed over Rynk.
@@ -316,16 +469,18 @@ pub struct ForkConfig {
     pub keep_mods: Vec<String>,
 }
 
-/// A combo: pressing every key in `keys` together emits `output`.
-///
-/// The triggers are actions rather than positions, so a combo follows the keys
-/// it names wherever they sit.
+/// A combo: pressing every trigger in `keys` or `positions` together emits
+/// `output`. Exactly one trigger representation is used by a populated slot.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ComboConfig {
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub name: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub keys: Vec<String>,
+    /// Physical matrix coordinates, stable across keymap and layer changes.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub positions: Vec<[u8; 2]>,
     pub output: String,
     /// Restrict the combo to one layer. Absent means every layer.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -639,6 +794,8 @@ const fn solid() -> EffectKind {
 /// [`RuntimeConfig`] or by reading a live keyboard.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Snapshot {
+    pub rows: u8,
+    pub cols: u8,
     /// `None` means the source or firmware does not manage the BLE name.
     pub bluetooth_name: Option<String>,
     pub default_layer: u8,
@@ -653,6 +810,208 @@ pub struct Snapshot {
     /// emptiness — so a file written before the `[[morse]]`, `[[combo]]` and
     /// `[[macro]]` sections existed can never read as "clear them".
     pub behaviors: BehaviorSnapshot,
+    /// `None` means the source or firmware does not manage pointing devices.
+    pub pointing: Option<WirePointingConfig>,
+}
+
+impl PointingModeConfig {
+    fn to_wire(&self) -> PointingMode {
+        match *self {
+            Self::Cursor {
+                multiplier_x,
+                multiplier_y,
+                invert_x,
+                invert_y,
+            } => PointingMode::Cursor(WireCursorConfig {
+                multiplier_x,
+                multiplier_y,
+                invert_x,
+                invert_y,
+            }),
+            Self::Scroll {
+                multiplier_x,
+                divisor_x,
+                multiplier_y,
+                divisor_y,
+                invert_x,
+                invert_y,
+            } => PointingMode::Scroll(WireScrollConfig {
+                multiplier_x,
+                divisor_x,
+                multiplier_y,
+                divisor_y,
+                invert_x,
+                invert_y,
+            }),
+            Self::Sniper {
+                multiplier,
+                divisor,
+                invert_x,
+                invert_y,
+            } => PointingMode::Sniper(WireSniperConfig {
+                multiplier,
+                divisor,
+                invert_x,
+                invert_y,
+            }),
+            Self::Caret {
+                disable_x,
+                disable_y,
+                invert_x,
+                invert_y,
+                threshold,
+                keycode_up,
+                keycode_down,
+                keycode_left,
+                keycode_right,
+            } => PointingMode::Caret(WireCaretConfig {
+                disable_x,
+                disable_y,
+                invert_x,
+                invert_y,
+                threshold,
+                keycode_up: keycode_up.into(),
+                keycode_down: keycode_down.into(),
+                keycode_left: keycode_left.into(),
+                keycode_right: keycode_right.into(),
+            }),
+            Self::Drag {
+                multiplier_x,
+                multiplier_y,
+                invert_x,
+                invert_y,
+                toggled_by,
+                latches,
+            } => PointingMode::Drag(WireDragConfig {
+                cursor: WireCursorConfig {
+                    multiplier_x,
+                    multiplier_y,
+                    invert_x,
+                    invert_y,
+                },
+                toggled_by,
+                latches,
+            }),
+        }
+    }
+
+    fn from_wire(mode: PointingMode) -> Result<Self> {
+        Ok(match mode {
+            PointingMode::Cursor(config) => Self::Cursor {
+                multiplier_x: config.multiplier_x,
+                multiplier_y: config.multiplier_y,
+                invert_x: config.invert_x,
+                invert_y: config.invert_y,
+            },
+            PointingMode::Scroll(config) => Self::Scroll {
+                multiplier_x: config.multiplier_x,
+                divisor_x: config.divisor_x,
+                multiplier_y: config.multiplier_y,
+                divisor_y: config.divisor_y,
+                invert_x: config.invert_x,
+                invert_y: config.invert_y,
+            },
+            PointingMode::Sniper(config) => Self::Sniper {
+                multiplier: config.multiplier,
+                divisor: config.divisor,
+                invert_x: config.invert_x,
+                invert_y: config.invert_y,
+            },
+            PointingMode::Drag(config) => Self::Drag {
+                multiplier_x: config.cursor.multiplier_x,
+                multiplier_y: config.cursor.multiplier_y,
+                invert_x: config.cursor.invert_x,
+                invert_y: config.cursor.invert_y,
+                toggled_by: config.toggled_by,
+                latches: config.latches,
+            },
+            PointingMode::Caret(config) => Self::Caret {
+                disable_x: config.disable_x,
+                disable_y: config.disable_y,
+                invert_x: config.invert_x,
+                invert_y: config.invert_y,
+                threshold: config.threshold,
+                keycode_up: config.keycode_up as u8,
+                keycode_down: config.keycode_down as u8,
+                keycode_left: config.keycode_left as u8,
+                keycode_right: config.keycode_right as u8,
+            },
+        })
+    }
+}
+
+impl PointingConfig {
+    fn to_wire(&self, layer_count: usize) -> Result<WirePointingConfig> {
+        use rynk::rmk_types::protocol::rynk::{
+            POINTING_DEVICE_CAPACITY, POINTING_LAYER_OVERRIDE_CAPACITY,
+        };
+        if self.devices.len() > POINTING_DEVICE_CAPACITY {
+            bail!("pointing config has more than {POINTING_DEVICE_CAPACITY} devices");
+        }
+        if self.overrides.len() > POINTING_LAYER_OVERRIDE_CAPACITY {
+            bail!("pointing config has more than {POINTING_LAYER_OVERRIDE_CAPACITY} overrides");
+        }
+        let mut result = WirePointingConfig {
+            device_count: self.devices.len() as u8,
+            override_count: self.overrides.len() as u8,
+            ..Default::default()
+        };
+        for (slot, device) in self.devices.iter().enumerate() {
+            if self.devices[..slot]
+                .iter()
+                .any(|old| old.device_id == device.device_id)
+            {
+                bail!(
+                    "pointing device {} is configured more than once",
+                    device.device_id
+                );
+            }
+            result.devices[slot] = WirePointingDeviceConfig {
+                device_id: device.device_id,
+                mode: device.mode.to_wire(),
+            };
+        }
+        for (slot, entry) in self.overrides.iter().enumerate() {
+            if usize::from(entry.layer) >= layer_count {
+                bail!(
+                    "pointing override {slot} references missing layer {}",
+                    entry.layer
+                );
+            }
+            result.overrides[slot] = WirePointingLayerOverride {
+                layer: entry.layer,
+                device_id: entry.device_id,
+                mode: entry.mode.to_wire(),
+            };
+        }
+        Ok(result)
+    }
+
+    fn from_wire(config: &WirePointingConfig) -> Result<Self> {
+        Ok(Self {
+            devices: config
+                .devices()
+                .iter()
+                .map(|device| {
+                    Ok(PointingDeviceConfig {
+                        device_id: device.device_id,
+                        mode: PointingModeConfig::from_wire(device.mode)?,
+                    })
+                })
+                .collect::<Result<_>>()?,
+            overrides: config
+                .overrides()
+                .iter()
+                .map(|entry| {
+                    Ok(PointingLayerOverride {
+                        layer: entry.layer,
+                        device_id: entry.device_id,
+                        mode: PointingModeConfig::from_wire(entry.mode)?,
+                    })
+                })
+                .collect::<Result<_>>()?,
+        })
+    }
 }
 
 /// The behavior half of a [`Snapshot`].
@@ -664,7 +1023,7 @@ pub struct BehaviorSnapshot {
     pub hold_trigger_positions: Option<Vec<HoldTriggerPosition>>,
     pub auto_mouse_layers: Option<Vec<WireAutoMouseLayerConfig>>,
     pub morses: Option<Vec<rynk::rmk_types::morse::Morse>>,
-    pub combos: Option<Vec<rynk::rmk_types::combo::Combo>>,
+    pub combos: Option<Vec<ComboDefinition>>,
     /// Macro space as the firmware stores it: the sequences concatenated, each
     /// ended by its own terminator, which is what `TriggerMacro` indexes into.
     pub macros: Option<Vec<u8>>,
@@ -760,6 +1119,9 @@ impl RuntimeConfig {
     }
 
     pub fn snapshot(&self) -> Result<Snapshot> {
+        if self.rows == 0 || self.cols == 0 {
+            bail!("rows and cols must both be non-zero");
+        }
         if self.layers.is_empty() {
             bail!("configuration must contain at least one [[layer]]");
         }
@@ -791,7 +1153,7 @@ impl RuntimeConfig {
                 bail!("duplicate layer id '{}'", layer.id);
             }
             layers.push(
-                parse_key_actions(&layer.keys, &profile_names)
+                parse_key_actions_for_matrix(&layer.keys, &profile_names, self.rows, self.cols)
                     .with_context(|| format!("layer {} ({})", index, layer.id))?,
             );
         }
@@ -829,9 +1191,11 @@ impl RuntimeConfig {
                     }))
             {
                 for [row, col] in positions {
-                    if *row >= ROWS || *col >= COLS {
+                    if *row >= self.rows || *col >= self.cols {
                         bail!(
-                            "{location} hold trigger position [{row}, {col}] is outside the {ROWS}x{COLS} matrix"
+                            "{location} hold trigger position [{row}, {col}] is outside the {}x{} matrix",
+                            self.rows,
+                            self.cols,
                         );
                     }
                 }
@@ -843,11 +1207,19 @@ impl RuntimeConfig {
             .map(LightingConfig::snapshot)
             .transpose()?;
         let behavior = self.behavior.as_ref();
+        let layer_count = layers.len();
         Ok(Snapshot {
+            rows: self.rows,
+            cols: self.cols,
             bluetooth_name: self.bluetooth_name.clone(),
             default_layer: self.default_layer,
             layers,
             lighting,
+            pointing: self
+                .pointing
+                .as_ref()
+                .map(|pointing| pointing.to_wire(layer_count))
+                .transpose()?,
             behaviors: BehaviorSnapshot {
                 config: behavior.map(BehaviorConfig::wire_config),
                 options: behavior.map(BehaviorConfig::wire_options).transpose()?,
@@ -904,7 +1276,7 @@ impl RuntimeConfig {
                             .enumerate()
                             .map(|(index, combo)| {
                                 combo
-                                    .to_wire(&profile_names)
+                                    .to_wire(&profile_names, self.rows, self.cols)
                                     .with_context(|| format!("[[combo]] {index} ({})", combo.name))
                             })
                             .collect::<Result<Vec<_>>>()
@@ -948,8 +1320,9 @@ impl RuntimeConfig {
                 .as_deref()
                 .unwrap_or_default(),
         );
-        let layers = snapshot
-            .layers
+        let mut snapshot_layers = snapshot.layers.clone();
+        trim_trailing_transparent_layers(&mut snapshot_layers);
+        let layers = snapshot_layers
             .iter()
             .enumerate()
             .map(|(index, keys)| {
@@ -957,61 +1330,65 @@ impl RuntimeConfig {
                 LayerConfig {
                     id: old.map_or_else(|| format!("layer{index}"), |layer| layer.id.clone()),
                     name: old.map_or_else(|| format!("Layer {index}"), |layer| layer.name.clone()),
-                    keys: render_key_actions(keys, &profile_names),
+                    keys: render_key_actions_for_matrix(
+                        keys,
+                        &profile_names,
+                        snapshot.rows,
+                        snapshot.cols,
+                    ),
                 }
             })
             .collect();
         Self {
+            rows: snapshot.rows,
+            cols: snapshot.cols,
             bluetooth_name: snapshot.bluetooth_name.clone(),
             default_layer: snapshot.default_layer,
             layers,
-            morses: snapshot
-                .behaviors
-                .morses
-                .as_deref()
-                .unwrap_or_default()
-                .iter()
-                .enumerate()
-                .map(|(index, morse)| {
-                    let mut config = MorseConfig::from_wire(morse, index);
-                    // The firmware stores no label, so keep the one a previous
-                    // file gave this slot, as layer names are kept.
-                    if let Some(old) = labels.and_then(|config| config.morses.get(index)) {
-                        config.name = old.name.clone();
-                    }
-                    config
-                })
-                .collect(),
-            combos: snapshot
-                .behaviors
-                .combos
-                .as_deref()
-                .unwrap_or_default()
-                .iter()
-                .enumerate()
-                .map(|(index, combo)| {
-                    let mut config = ComboConfig::from_wire(combo, index, &profile_names);
-                    if let Some(old) = labels.and_then(|config| config.combos.get(index)) {
-                        config.name = old.name.clone();
-                    }
-                    config
-                })
-                .collect(),
-            forks: snapshot
-                .behaviors
-                .forks
-                .as_deref()
-                .unwrap_or_default()
-                .iter()
-                .enumerate()
-                .map(|(index, fork)| {
-                    let mut config = ForkConfig::from_wire(fork, index);
-                    if let Some(old) = labels.and_then(|config| config.forks.get(index)) {
-                        config.name = old.name.clone();
-                    }
-                    config
-                })
-                .collect(),
+            morses: used_slots(
+                snapshot.behaviors.morses.as_deref().unwrap_or_default(),
+                |morse| morse.actions.is_empty(),
+            )
+            .iter()
+            .enumerate()
+            .map(|(index, morse)| {
+                let mut config = MorseConfig::from_wire(morse, index);
+                // The firmware stores no label, so keep the one a previous
+                // file gave this slot, as layer names are kept.
+                if let Some(old) = labels.and_then(|config| config.morses.get(index)) {
+                    config.name = old.name.clone();
+                }
+                config
+            })
+            .collect(),
+            combos: used_slots(
+                snapshot.behaviors.combos.as_deref().unwrap_or_default(),
+                ComboDefinition::is_empty,
+            )
+            .iter()
+            .enumerate()
+            .map(|(index, combo)| {
+                let mut config = ComboConfig::from_wire(combo, index, &profile_names);
+                if let Some(old) = labels.and_then(|config| config.combos.get(index)) {
+                    config.name = old.name.clone();
+                }
+                config
+            })
+            .collect(),
+            forks: used_slots(
+                snapshot.behaviors.forks.as_deref().unwrap_or_default(),
+                is_empty_fork,
+            )
+            .iter()
+            .enumerate()
+            .map(|(index, fork)| {
+                let mut config = ForkConfig::from_wire(fork, index);
+                if let Some(old) = labels.and_then(|config| config.forks.get(index)) {
+                    config.name = old.name.clone();
+                }
+                config
+            })
+            .collect(),
             macros: snapshot
                 .behaviors
                 .macros
@@ -1019,6 +1396,13 @@ impl RuntimeConfig {
                 .map(MacroConfig::all_from_wire)
                 .unwrap_or_default(),
             behavior,
+            pointing: snapshot
+                .pointing
+                .as_ref()
+                .map(PointingConfig::from_wire)
+                .transpose()
+                .ok()
+                .flatten(),
             lighting: snapshot
                 .lighting
                 .as_ref()
@@ -1036,6 +1420,14 @@ impl RuntimeConfig {
     }
 }
 
+/// The occupied prefix of a fixed-capacity runtime table. Only the unused tail
+/// may be removed: key actions address entries by slot, so interior gaps must
+/// keep their indices.
+fn used_slots<T>(table: &[T], empty: impl Fn(&T) -> bool) -> &[T] {
+    let used = table.iter().rposition(|entry| !empty(entry));
+    &table[..used.map_or(0, |index| index + 1)]
+}
+
 /// Spell a wire action the way the keymap's `keys` field spells one.
 fn action_name(action: Action) -> String {
     crate::keycodes::format_keycode(crate::rynk_keycode::to_via_keycode(KeyAction::Single(
@@ -1046,6 +1438,7 @@ fn action_name(action: Action) -> String {
 fn action_from_name(text: &str) -> Result<Action> {
     match crate::rynk_keycode::from_via_keycode(crate::keycodes::parse_keycode(text)?) {
         KeyAction::Single(action) => Ok(action),
+        KeyAction::No => Ok(Action::No),
         _ => bail!("'{text}' is not a single action"),
     }
 }
@@ -1260,7 +1653,12 @@ impl MorseConfig {
                 action_from_name(text).context("hold after tap")?,
             );
         }
-        if morse.actions.is_empty() {
+        if morse.actions.is_empty()
+            && self.tap.is_none()
+            && self.hold.is_none()
+            && self.double_tap.is_none()
+            && self.hold_after_tap.is_none()
+        {
             bail!("a morse needs at least one of tap, hold, double_tap or hold_after_tap");
         }
         Ok(morse)
@@ -1271,7 +1669,10 @@ impl MorseConfig {
 
         Self {
             name: format!("morse {index}"),
-            tap: morse.get(TAP).map(action_name),
+            tap: morse
+                .get(TAP)
+                .map(action_name)
+                .or_else(|| morse.actions.is_empty().then(|| action_name(Action::No))),
             hold: morse.get(HOLD).map(action_name),
             double_tap: morse.get(DOUBLE_TAP).map(action_name),
             hold_after_tap: morse.get(HOLD_AFTER_TAP).map(action_name),
@@ -1377,7 +1778,49 @@ fn modifier_list_from_wire(
 }
 
 impl ComboConfig {
-    pub(crate) fn to_wire(&self, profile_names: &[String]) -> Result<Combo> {
+    pub(crate) fn to_wire(
+        &self,
+        profile_names: &[String],
+        rows: u8,
+        cols: u8,
+    ) -> Result<ComboDefinition> {
+        if !self.keys.is_empty() && !self.positions.is_empty() {
+            bail!("a combo cannot use both keys and positions");
+        }
+        let output =
+            crate::rynk_keycode::from_via_keycode(crate::keycodes::parse_keycode(&self.output)?);
+        if self.keys.is_empty() && self.positions.is_empty() {
+            if output == KeyAction::No {
+                return Ok(ComboDefinition::empty());
+            }
+            bail!("a combo needs at least two keys or positions");
+        }
+        if !self.positions.is_empty() {
+            let mut positions = heapless::Vec::new();
+            for [row, col] in &self.positions {
+                if *row >= rows || *col >= cols {
+                    bail!("combo position [{row}, {col}] is outside the {rows}x{cols} matrix");
+                }
+                let position = MatrixPosition {
+                    row: *row,
+                    col: *col,
+                };
+                if positions.contains(&position) {
+                    bail!("combo position [{row}, {col}] is duplicated");
+                }
+                positions
+                    .push(position)
+                    .map_err(|_| anyhow::anyhow!("more positions than a combo can hold"))?;
+            }
+            if positions.len() < 2 {
+                bail!("a combo needs at least two positions");
+            }
+            return Ok(ComboDefinition::Positions(PositionCombo {
+                positions,
+                output,
+                layer: self.layer,
+            }));
+        }
         let mut actions = heapless::Vec::new();
         for key in &self.keys {
             let action = parse_key_action(key, profile_names)?;
@@ -1388,27 +1831,46 @@ impl ComboConfig {
         if actions.len() < 2 {
             bail!("a combo needs at least two keys");
         }
-        Ok(Combo {
+        Ok(ComboDefinition::Actions(Combo {
             actions,
-            output: crate::rynk_keycode::from_via_keycode(crate::keycodes::parse_keycode(
-                &self.output,
-            )?),
+            output,
             layer: self.layer,
-        })
+        }))
     }
 
-    pub(crate) fn from_wire(combo: &Combo, index: usize, profile_names: &[String]) -> Self {
+    pub(crate) fn from_wire(
+        definition: &ComboDefinition,
+        index: usize,
+        profile_names: &[String],
+    ) -> Self {
+        let (keys, positions, output, layer) = match definition {
+            ComboDefinition::Actions(combo) => (
+                combo
+                    .actions
+                    .iter()
+                    .map(|action| render_key_action(*action, profile_names))
+                    .collect(),
+                Vec::new(),
+                combo.output,
+                combo.layer,
+            ),
+            ComboDefinition::Positions(combo) => (
+                Vec::new(),
+                combo
+                    .positions
+                    .iter()
+                    .map(|position| [position.row, position.col])
+                    .collect(),
+                combo.output,
+                combo.layer,
+            ),
+        };
         Self {
             name: format!("combo {index}"),
-            keys: combo
-                .actions
-                .iter()
-                .map(|action| render_key_action(*action, profile_names))
-                .collect(),
-            output: crate::keycodes::format_keycode(crate::rynk_keycode::to_via_keycode(
-                combo.output,
-            )),
-            layer: combo.layer,
+            keys,
+            positions,
+            output: crate::keycodes::format_keycode(crate::rynk_keycode::to_via_keycode(output)),
+            layer,
         }
     }
 }
@@ -1675,6 +2137,13 @@ fn is_empty_fork(fork: &rynk::rmk_types::fork::Fork) -> bool {
 
 pub fn differences(desired: &Snapshot, live: &Snapshot) -> Vec<String> {
     let mut result = Vec::new();
+    if desired.rows != live.rows || desired.cols != live.cols {
+        result.push(format!(
+            "matrix: file {}x{} != keyboard {}x{}",
+            desired.rows, desired.cols, live.rows, live.cols
+        ));
+        return result;
+    }
     if desired.bluetooth_name.is_some() && desired.bluetooth_name != live.bluetooth_name {
         result.push(format!(
             "bluetooth name: file '{}' != keyboard '{}'",
@@ -1688,8 +2157,9 @@ pub fn differences(desired: &Snapshot, live: &Snapshot) -> Vec<String> {
             desired.default_layer, live.default_layer
         ));
     }
+    let layer_size = usize::from(desired.rows) * usize::from(desired.cols);
     for layer in 0..desired.layers.len() {
-        for offset in 0..LAYER_SIZE {
+        for offset in 0..layer_size {
             let wanted = desired
                 .layers
                 .get(layer)
@@ -1701,8 +2171,8 @@ pub fn differences(desired: &Snapshot, live: &Snapshot) -> Vec<String> {
             if wanted != present {
                 result.push(format!(
                     "layer {layer} r{},c{}: file {} != keyboard {}",
-                    offset / usize::from(COLS),
-                    offset % usize::from(COLS),
+                    offset / usize::from(desired.cols),
+                    offset % usize::from(desired.cols),
                     render_key_action(wanted, &[]),
                     render_key_action(present, &[]),
                 ));
@@ -1763,7 +2233,7 @@ pub fn differences(desired: &Snapshot, live: &Snapshot) -> Vec<String> {
         // An unprogrammed combo outputs nothing; that, not an empty trigger
         // list, is how the firmware spells a free slot.
         report_surplus(&mut result, "combo", wanted.len(), present, |combo| {
-            combo.output == rynk::rmk_types::action::KeyAction::No
+            combo.output() == rynk::rmk_types::action::KeyAction::No
         });
     }
     if let Some(wanted) = &desired.behaviors.forks {
@@ -1781,6 +2251,15 @@ pub fn differences(desired: &Snapshot, live: &Snapshot) -> Vec<String> {
         // the file describes.
         if present.len() < wanted.len() || present[..wanted.len()] != wanted[..] {
             result.push(format!("macro space: {} byte(s) differ", wanted.len()));
+        }
+    }
+    if let Some(wanted) = &desired.pointing {
+        let present = live.pointing.as_ref();
+        let matches = present.is_some_and(|present| {
+            wanted.devices() == present.devices() && wanted.overrides() == present.overrides()
+        });
+        if !matches {
+            result.push("pointing configuration: file differs from keyboard".into());
         }
     }
 
@@ -1869,31 +2348,7 @@ pub fn differences(desired: &Snapshot, live: &Snapshot) -> Vec<String> {
 }
 
 pub fn parse_keys(text: &str) -> Result<Vec<u16>> {
-    let rows = text
-        .lines()
-        .map(|line| line.split('#').next().unwrap_or_default().trim())
-        .filter(|line| !line.is_empty())
-        .collect::<Vec<_>>();
-    if rows.len() != usize::from(ROWS) {
-        bail!(
-            "keys must contain {ROWS} non-empty rows, found {}",
-            rows.len()
-        );
-    }
-    let mut result = Vec::with_capacity(LAYER_SIZE);
-    for (row, line) in rows.iter().enumerate() {
-        let tokens = split_grid_tokens(line)?;
-        if tokens.len() != usize::from(COLS) {
-            bail!("row {row} must contain {COLS} keys, found {}", tokens.len());
-        }
-        for token in tokens {
-            result.push(if token == "--" {
-                0
-            } else {
-                crate::keycodes::parse_keycode(&token)?
-            });
-        }
-    }
+    let result = parse_keys_for_matrix(text, ROWS, COLS)?;
     for hole in HOLES {
         if result[hole] != 0 {
             bail!(
@@ -1901,6 +2356,38 @@ pub fn parse_keys(text: &str) -> Result<Vec<u16>> {
                 hole / usize::from(COLS),
                 hole % usize::from(COLS)
             );
+        }
+    }
+    Ok(result)
+}
+
+pub fn parse_keys_for_matrix(text: &str, rows_count: u8, cols_count: u8) -> Result<Vec<u16>> {
+    let rows = text
+        .lines()
+        .map(|line| line.split('#').next().unwrap_or_default().trim())
+        .filter(|line| !line.is_empty())
+        .collect::<Vec<_>>();
+    if rows.len() != usize::from(rows_count) {
+        bail!(
+            "keys must contain {rows_count} non-empty rows, found {}",
+            rows.len()
+        );
+    }
+    let mut result = Vec::with_capacity(usize::from(rows_count) * usize::from(cols_count));
+    for (row, line) in rows.iter().enumerate() {
+        let tokens = split_grid_tokens(line)?;
+        if tokens.len() != usize::from(cols_count) {
+            bail!(
+                "row {row} must contain {cols_count} keys, found {}",
+                tokens.len()
+            );
+        }
+        for token in tokens {
+            result.push(if token == "--" {
+                0
+            } else {
+                crate::keycodes::parse_keycode(&token)?
+            });
         }
     }
     Ok(result)
@@ -1936,27 +2423,7 @@ fn split_grid_tokens(line: &str) -> Result<Vec<String>> {
 }
 
 pub fn parse_key_actions(text: &str, profile_names: &[String]) -> Result<Vec<KeyAction>> {
-    let rows = text
-        .lines()
-        .map(|line| line.split('#').next().unwrap_or_default().trim())
-        .filter(|line| !line.is_empty())
-        .collect::<Vec<_>>();
-    if rows.len() != usize::from(ROWS) {
-        bail!(
-            "keys must contain {ROWS} non-empty rows, found {}",
-            rows.len()
-        );
-    }
-    let mut result = Vec::with_capacity(LAYER_SIZE);
-    for (row, line) in rows.iter().enumerate() {
-        let tokens = split_grid_tokens(line)?;
-        if tokens.len() != usize::from(COLS) {
-            bail!("row {row} must contain {COLS} keys, found {}", tokens.len());
-        }
-        for token in tokens {
-            result.push(parse_key_action(&token, profile_names)?);
-        }
-    }
+    let result = parse_key_actions_for_matrix(text, profile_names, ROWS, COLS)?;
     for hole in HOLES {
         if result[hole] != KeyAction::No {
             bail!(
@@ -1964,6 +2431,39 @@ pub fn parse_key_actions(text: &str, profile_names: &[String]) -> Result<Vec<Key
                 hole / usize::from(COLS),
                 hole % usize::from(COLS)
             );
+        }
+    }
+    Ok(result)
+}
+
+pub fn parse_key_actions_for_matrix(
+    text: &str,
+    profile_names: &[String],
+    rows_count: u8,
+    cols_count: u8,
+) -> Result<Vec<KeyAction>> {
+    let rows = text
+        .lines()
+        .map(|line| line.split('#').next().unwrap_or_default().trim())
+        .filter(|line| !line.is_empty())
+        .collect::<Vec<_>>();
+    if rows.len() != usize::from(rows_count) {
+        bail!(
+            "keys must contain {rows_count} non-empty rows, found {}",
+            rows.len()
+        );
+    }
+    let mut result = Vec::with_capacity(usize::from(rows_count) * usize::from(cols_count));
+    for (row, line) in rows.iter().enumerate() {
+        let tokens = split_grid_tokens(line)?;
+        if tokens.len() != usize::from(cols_count) {
+            bail!(
+                "row {row} must contain {cols_count} keys, found {}",
+                tokens.len()
+            );
+        }
+        for token in tokens {
+            result.push(parse_key_action(&token, profile_names)?);
         }
     }
     Ok(result)
@@ -2043,13 +2543,17 @@ fn split_call_arguments(text: &str) -> Result<Vec<String>> {
 }
 
 pub fn render_keys(keys: &[u16]) -> String {
+    render_keys_for_matrix(keys, ROWS, COLS)
+}
+
+pub fn render_keys_for_matrix(keys: &[u16], rows_count: u8, cols_count: u8) -> String {
     let mut text = String::from("\n");
-    for row in 0..usize::from(ROWS) {
-        for col in 0..usize::from(COLS) {
+    for row in 0..usize::from(rows_count) {
+        for col in 0..usize::from(cols_count) {
             if col > 0 {
                 text.push(' ');
             }
-            let offset = row * usize::from(COLS) + col;
+            let offset = row * usize::from(cols_count) + col;
             if keys[offset] == 0 {
                 text.push_str("--");
             } else {
@@ -2065,13 +2569,22 @@ pub fn render_keys(keys: &[u16]) -> String {
 }
 
 pub fn render_key_actions(keys: &[KeyAction], profile_names: &[String]) -> String {
+    render_key_actions_for_matrix(keys, profile_names, ROWS, COLS)
+}
+
+pub fn render_key_actions_for_matrix(
+    keys: &[KeyAction],
+    profile_names: &[String],
+    rows_count: u8,
+    cols_count: u8,
+) -> String {
     let mut text = String::from("\n");
-    for row in 0..usize::from(ROWS) {
-        for col in 0..usize::from(COLS) {
+    for row in 0..usize::from(rows_count) {
+        for col in 0..usize::from(cols_count) {
             if col > 0 {
                 text.push(' ');
             }
-            let action = keys[row * usize::from(COLS) + col];
+            let action = keys[row * usize::from(cols_count) + col];
             text.push_str(&render_key_action(action, profile_names).replace(", ", ","));
         }
         text.push('\n');
@@ -2520,15 +3033,14 @@ pub fn scene_policy_to_wire(policy: ScenePolicyConfig) -> LightingLayerPolicy {
 }
 
 /// RMK gives every layer slot its fixed capacity and initializes the unused
-/// ones as transparent, so a keyboard always reports more layers than a source
-/// file names. Dropping the trailing layers that bind nothing is what lets a
-/// five-layer file round-trip against eight-layer firmware.
+/// ones as transparent. `No` is intentionally not empty: an all-`No` layer
+/// blocks fallback and must survive an export/reapply cycle.
 pub fn trim_trailing_transparent_layers(layers: &mut Vec<Vec<KeyAction>>) {
     while layers.len() > 1
         && layers.last().is_some_and(|layer| {
             layer
                 .iter()
-                .all(|action| matches!(action, KeyAction::No | KeyAction::Transparent))
+                .all(|action| matches!(action, KeyAction::Transparent))
         })
     {
         layers.pop();
@@ -2683,6 +3195,8 @@ mod tests {
 
     fn minimal_runtime_config(bluetooth_name: Option<&str>) -> RuntimeConfig {
         RuntimeConfig {
+            rows: ROWS,
+            cols: COLS,
             bluetooth_name: bluetooth_name.map(str::to_owned),
             default_layer: 0,
             layers: vec![LayerConfig {
@@ -2695,6 +3209,7 @@ mod tests {
             macros: Vec::new(),
             forks: Vec::new(),
             behavior: None,
+            pointing: None,
             lighting: None,
         }
     }
@@ -2726,6 +3241,56 @@ mod tests {
     }
 
     #[test]
+    fn go60_shape_and_pointing_policy_round_trip() {
+        let text = r#"
+rows = 5
+default_layer = 0
+
+[[layer]]
+id = "base"
+name = "Base"
+keys = """
+-- -- -- -- -- -- -- -- -- -- -- -- -- --
+-- -- -- -- -- -- -- -- -- -- -- -- -- --
+-- -- -- -- -- -- -- -- -- -- -- -- -- --
+-- -- -- -- -- -- -- -- -- -- -- -- -- --
+-- -- -- -- -- -- -- -- -- -- -- -- -- --
+"""
+
+[pointing]
+
+[[pointing.device]]
+device_id = 0
+mode = "scroll"
+
+[[pointing.device]]
+device_id = 1
+mode = "cursor"
+"#;
+        let config = RuntimeConfig::from_toml(text).unwrap();
+        let snapshot = config.snapshot().unwrap();
+        assert_eq!((snapshot.rows, snapshot.cols), (5, 14));
+        assert_eq!(snapshot.layers[0].len(), 70);
+        let pointing = snapshot.pointing.unwrap();
+        assert!(matches!(
+            pointing.devices()[0].mode,
+            PointingMode::Scroll(_)
+        ));
+        assert!(matches!(
+            pointing.devices()[1].mode,
+            PointingMode::Cursor(_)
+        ));
+
+        let serialized = config.to_toml().unwrap();
+        let rebuilt = RuntimeConfig::from_toml(&serialized)
+            .unwrap()
+            .snapshot()
+            .unwrap();
+        assert_eq!(rebuilt.rows, 5);
+        assert_eq!(rebuilt.pointing.unwrap().devices(), pointing.devices());
+    }
+
+    #[test]
     fn parameterized_tap_holds_round_trip_without_via_loss() {
         let keys = "\n-- -- MT(A, LGui, hrm_pinky) LT(2, Escape, layer_hold) TH(B, LSFT, hrm_pinky) -- -- -- -- -- -- -- -- --\n-- -- -- -- -- -- -- -- -- -- -- -- -- --\n-- -- -- -- -- -- -- -- -- -- -- -- -- --\n-- -- -- -- -- -- -- -- -- -- -- -- -- --\n-- -- -- -- -- -- -- -- -- -- -- -- -- --\n-- -- -- -- -- -- -- -- -- -- -- -- -- --\n";
         let profiles = vec!["hrm_pinky".to_owned(), "layer_hold".to_owned()];
@@ -2752,15 +3317,91 @@ mod tests {
                 "TH(KC_0, LSFT(KC_0), autoshift)".to_owned(),
                 "LT(4, KC_BSPC, thumb)".to_owned(),
             ],
+            positions: Vec::new(),
             output: "KC_F11".to_owned(),
             layer: Some(2),
         };
 
-        let wire = config.to_wire(&profiles).unwrap();
-        assert!(matches!(wire.actions[0], KeyAction::TapHold(_, _, 0)));
-        assert!(matches!(wire.actions[1], KeyAction::TapHold(_, _, 1)));
+        let wire = config.to_wire(&profiles, ROWS, COLS).unwrap();
+        let ComboDefinition::Actions(combo) = &wire else {
+            panic!("key triggers became position triggers");
+        };
+        assert!(matches!(combo.actions[0], KeyAction::TapHold(_, _, 0)));
+        assert!(matches!(combo.actions[1], KeyAction::TapHold(_, _, 1)));
         let rebuilt = ComboConfig::from_wire(&wire, 0, &profiles);
         assert_eq!(rebuilt.keys, config.keys);
+    }
+
+    #[test]
+    fn position_combo_round_trips_without_becoming_action_triggers() {
+        let config = ComboConfig {
+            name: "home pair".to_owned(),
+            keys: Vec::new(),
+            positions: vec![[3, 1], [3, 10]],
+            output: "KC_ESC".to_owned(),
+            layer: Some(2),
+        };
+
+        let wire = config.to_wire(&[], ROWS, COLS).unwrap();
+        let ComboDefinition::Positions(position) = &wire else {
+            panic!("position triggers became action triggers");
+        };
+        assert_eq!(
+            position.positions.as_slice(),
+            [
+                MatrixPosition { row: 3, col: 1 },
+                MatrixPosition { row: 3, col: 10 },
+            ]
+        );
+        let rebuilt = ComboConfig::from_wire(&wire, 0, &[]);
+        assert_eq!(rebuilt.positions, config.positions);
+        assert!(rebuilt.keys.is_empty());
+        assert_eq!(rebuilt.output, config.output);
+        assert_eq!(rebuilt.layer, config.layer);
+    }
+
+    #[test]
+    fn export_trims_capacity_but_keeps_blocking_layers_and_interior_slots() {
+        let config = minimal_runtime_config(None);
+        let mut snapshot = config.snapshot().unwrap();
+        let a = action_from_name("KC_A").unwrap();
+        let b = action_from_name("KC_B").unwrap();
+        let escape = action_from_name("KC_ESC").unwrap();
+        let mut used_morse = Morse::default();
+        let _ = used_morse.put(rynk::rmk_types::morse::TAP, a);
+        snapshot.layers.push(vec![KeyAction::No; LAYER_SIZE]);
+        snapshot
+            .layers
+            .push(vec![KeyAction::Transparent; LAYER_SIZE]);
+        snapshot.behaviors.morses = Some(vec![Morse::default(), used_morse, Morse::default()]);
+        snapshot.behaviors.combos = Some(vec![
+            ComboDefinition::empty(),
+            ComboDefinition::Actions(Combo {
+                actions: [KeyAction::Single(a), KeyAction::Single(b)]
+                    .into_iter()
+                    .collect(),
+                output: KeyAction::Single(escape),
+                layer: None,
+            }),
+            ComboDefinition::empty(),
+        ]);
+        snapshot.behaviors.forks = Some(vec![
+            rynk::rmk_types::fork::Fork::default(),
+            rynk::rmk_types::fork::Fork {
+                trigger: KeyAction::Single(a),
+                positive_output: KeyAction::Single(b),
+                ..Default::default()
+            },
+            rynk::rmk_types::fork::Fork::default(),
+        ]);
+
+        let exported = RuntimeConfig::from_snapshot(&snapshot, None);
+        assert_eq!(exported.layers.len(), 2, "the all-No layer was trimmed");
+        assert_eq!(exported.morses.len(), 2);
+        assert_eq!(exported.combos.len(), 2);
+        assert_eq!(exported.forks.len(), 2);
+        RuntimeConfig::from_toml(&exported.to_toml().unwrap())
+            .expect("a canonical export must validate");
     }
 
     #[test]
@@ -2982,11 +3623,14 @@ Density = 6
             let mut snap = lighting_snapshot(None, None);
             snap.conditional_scenes = Some(cells);
             Snapshot {
+                rows: ROWS,
+                cols: COLS,
                 bluetooth_name: None,
                 behaviors: BehaviorSnapshot::default(),
                 default_layer: 0,
                 layers: Vec::new(),
                 lighting: Some(snap),
+                pointing: None,
             }
         };
 
@@ -3008,22 +3652,28 @@ Density = 6
             let mut snap = lighting_snapshot(None, None);
             snap.conditional_scenes = None;
             Snapshot {
+                rows: ROWS,
+                cols: COLS,
                 bluetooth_name: None,
                 behaviors: BehaviorSnapshot::default(),
                 default_layer: 0,
                 layers: Vec::new(),
                 lighting: Some(snap),
+                pointing: None,
             }
         };
         let empty_file = {
             let mut snap = lighting_snapshot(None, None);
             snap.conditional_scenes = Some(Vec::new());
             Snapshot {
+                rows: ROWS,
+                cols: COLS,
                 bluetooth_name: None,
                 behaviors: BehaviorSnapshot::default(),
                 default_layer: 0,
                 layers: Vec::new(),
                 lighting: Some(snap),
+                pointing: None,
             }
         };
         assert!(differences(&empty_file, &unsupported).is_empty());
@@ -3050,11 +3700,14 @@ Density = 6
                 effects: None,
             }]);
             Snapshot {
+                rows: ROWS,
+                cols: COLS,
                 bluetooth_name: None,
                 behaviors: BehaviorSnapshot::default(),
                 default_layer: 0,
                 layers: Vec::new(),
                 lighting: Some(snap),
+                pointing: None,
             }
         };
         let found = differences(&with_rule, &unsupported);
@@ -3075,13 +3728,11 @@ Density = 6
             output: trigger,
             layer: None,
         };
-        let empty = Combo {
-            actions: Default::default(),
-            output: KeyAction::No,
-            layer: None,
-        };
+        let empty = ComboDefinition::empty();
 
         let mut desired = Snapshot {
+            rows: ROWS,
+            cols: COLS,
             bluetooth_name: None,
             default_layer: 0,
             layers: Vec::new(),
@@ -3091,19 +3742,23 @@ Density = 6
                 combos: Some(Vec::new()),
                 ..BehaviorSnapshot::default()
             },
+            pointing: None,
         };
         let live = Snapshot {
+            rows: ROWS,
+            cols: COLS,
             bluetooth_name: None,
             default_layer: 0,
             layers: Vec::new(),
             lighting: None,
             behaviors: BehaviorSnapshot {
                 combos: Some(vec![
-                    combo(KeyAction::Single(Action::LayerToggle(2))),
+                    ComboDefinition::Actions(combo(KeyAction::Single(Action::LayerToggle(2)))),
                     empty.clone(),
                 ]),
                 ..BehaviorSnapshot::default()
             },
+            pointing: None,
         };
         let report = differences(&desired, &live);
         assert_eq!(
@@ -3294,6 +3949,8 @@ Density = 6
     #[test]
     fn pull_records_only_parameters_that_differ_from_their_default() {
         let snapshot = Snapshot {
+            rows: ROWS,
+            cols: COLS,
             bluetooth_name: None,
             behaviors: BehaviorSnapshot::default(),
             default_layer: 0,
@@ -3305,6 +3962,7 @@ Density = 6
                     &[("Density", 0, 16, 4, 6), ("Trail Length", 0, 255, 128, 128)],
                 )]),
             )),
+            pointing: None,
         };
         let mut config = RuntimeConfig::from_snapshot(&snapshot, None);
         config.retain_non_default_params(&snapshot);
@@ -3316,6 +3974,8 @@ Density = 6
     #[test]
     fn pull_drops_parameters_when_the_keyboard_has_none() {
         let snapshot = Snapshot {
+            rows: ROWS,
+            cols: COLS,
             bluetooth_name: None,
             behaviors: BehaviorSnapshot::default(),
             default_layer: 0,
@@ -3324,6 +3984,7 @@ Density = 6
                 Some(effects_with(&[("Density", 6)])),
                 None,
             )),
+            pointing: None,
         };
         let mut config = RuntimeConfig::from_snapshot(&snapshot, None);
         config.retain_non_default_params(&snapshot);

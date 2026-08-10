@@ -150,8 +150,7 @@ pub fn render_config_as(
     format: ConfigFormat,
     previous: Option<String>,
 ) -> Result<String, JsValue> {
-    let mut snapshot = convert::snapshot_from_wire(&snapshot, &catalog).map_err(js_error)?;
-    glove80_config::trim_trailing_transparent_layers(&mut snapshot.layers);
+    let snapshot = convert::snapshot_from_wire(&snapshot, &catalog).map_err(js_error)?;
     let labels = previous
         .as_deref()
         .and_then(|text| parse_text(text, detect_config_format(text)).ok());

@@ -7,7 +7,7 @@
 
 use rynk::rmk_types::action::KeyAction;
 use rynk::rmk_types::auto_mouse::AutoMouseLayerConfig;
-use rynk::rmk_types::combo::Combo;
+use rynk::rmk_types::combo::ComboDefinition;
 use rynk::rmk_types::fork::Fork;
 use rynk::rmk_types::morse::Morse;
 use rynk::rmk_types::protocol::rynk::{
@@ -99,7 +99,7 @@ pub struct BehaviorSnapshot {
     pub hold_trigger_positions: Option<Vec<HoldTriggerPosition>>,
     pub auto_mouse_layers: Option<Vec<AutoMouseLayerConfig>>,
     pub morses: Option<Vec<Morse>>,
-    pub combos: Option<Vec<Combo>>,
+    pub combos: Option<Vec<ComboDefinition>>,
     /// Macro space exactly as the firmware stores it: the sequences
     /// concatenated, each closed by its own terminator, which is what
     /// `TriggerMacro` indexes into.
