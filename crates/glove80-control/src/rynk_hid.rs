@@ -76,6 +76,18 @@ fn open_file(path: &Path) -> std::io::Result<File> {
         .open(path)
 }
 
+fn drain_stale_reports(file: &mut File) -> std::io::Result<()> {
+    let mut report = [0; RYNK_HID_REPORT_SIZE];
+    loop {
+        match file.read(&mut report) {
+            Ok(0) => return Ok(()),
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => return Ok(()),
+            Err(error) => return Err(error),
+        }
+    }
+}
+
 impl RynkDevice for HidDevice {
     type Read = HidReader;
     type Write = HidWriter;
@@ -85,8 +97,11 @@ impl RynkDevice for HidDevice {
     }
 
     async fn open(self) -> Result<(Self::Read, Self::Write), RynkHostError> {
-        let reader = open_file(&self.path)
-            .and_then(AsyncFd::new)
+        let mut reader = open_file(&self.path)
+            .map_err(|error| RynkHostError::Transport("open_hid_reader", error.to_string()))?;
+        drain_stale_reports(&mut reader)
+            .map_err(|error| RynkHostError::Transport("drain_hid_reader", error.to_string()))?;
+        let reader = AsyncFd::new(reader)
             .map_err(|error| RynkHostError::Transport("open_hid_reader", error.to_string()))?;
         let writer = open_file(&self.path)
             .and_then(AsyncFd::new)

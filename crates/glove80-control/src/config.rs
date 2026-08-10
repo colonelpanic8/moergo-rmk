@@ -3,8 +3,9 @@
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use clap::{Subcommand, ValueEnum};
 use glove80_config::{
     background_from_wire, background_to_wire, conditional_scene_from_wire,
@@ -29,6 +30,9 @@ use rynk::{Client, RynkHostError};
 use crate::transport::Selector;
 
 pub use glove80_config::DiffFound;
+
+const CONDITIONAL_READ_ATTEMPTS: usize = 3;
+const CONDITIONAL_READ_TIMEOUT: Duration = Duration::from_secs(10);
 
 #[derive(Subcommand)]
 pub enum ConfigCommand {
@@ -107,6 +111,54 @@ fn parse(path: &Path) -> Result<RuntimeConfig> {
         .with_context(|| format!("could not read {}", path.display()))?;
     parse_text(&text, file_format(path, Some(&text)))
         .with_context(|| format!("could not parse {}", path.display()))
+}
+
+async fn read_extended_runtime_conditionals(
+    client: &Client,
+) -> Result<Vec<LightingExtendedConditionalSceneCell>> {
+    let mut last_error = None;
+    for _ in 0..CONDITIONAL_READ_ATTEMPTS {
+        match tokio::time::timeout(
+            CONDITIONAL_READ_TIMEOUT,
+            client.read_all_lighting_extended_runtime_conditional_scenes(),
+        )
+        .await
+        {
+            Ok(Ok((_, cells))) => return Ok(cells),
+            Ok(Err(error)) => last_error = Some(anyhow!(error)),
+            Err(_) => {
+                last_error = Some(anyhow!(
+                    "extended conditional table did not answer within {:?}",
+                    CONDITIONAL_READ_TIMEOUT
+                ));
+            }
+        }
+    }
+    Err(last_error.unwrap_or_else(|| anyhow!("extended conditional table read failed")))
+}
+
+async fn read_legacy_runtime_conditionals(
+    client: &Client,
+) -> Result<Vec<rynk::rmk_types::protocol::rynk::LightingConditionalSceneCell>> {
+    let mut last_error = None;
+    for _ in 0..CONDITIONAL_READ_ATTEMPTS {
+        match tokio::time::timeout(
+            CONDITIONAL_READ_TIMEOUT,
+            client.read_all_lighting_runtime_conditional_scenes(),
+        )
+        .await
+        {
+            Ok(Ok((_, cells))) => return Ok(cells),
+            Ok(Err(error)) => last_error = Some(anyhow!(error)),
+            Err(_) => {
+                last_error = Some(anyhow!(
+                    "conditional table did not answer within {:?}",
+                    CONDITIONAL_READ_TIMEOUT
+                ));
+            }
+        }
+    }
+    Err(last_error.unwrap_or_else(|| anyhow!("conditional table read failed")))
 }
 
 fn render(
@@ -263,9 +315,7 @@ async fn read_snapshot(client: &Client) -> Result<Snapshot> {
         .features
         .contains(LightingFeatureFlags::RUNTIME_EFFECTS_CONDITIONS)
     {
-        let (_, cells) = client
-            .read_all_lighting_extended_runtime_conditional_scenes()
-            .await?;
+        let cells = read_extended_runtime_conditionals(client).await?;
         Some(
             cells
                 .into_iter()
@@ -276,9 +326,7 @@ async fn read_snapshot(client: &Client) -> Result<Snapshot> {
         .features
         .contains(LightingFeatureFlags::RUNTIME_CONDITIONAL_SCENES)
     {
-        let (_, cells) = client
-            .read_all_lighting_runtime_conditional_scenes()
-            .await?;
+        let cells = read_legacy_runtime_conditionals(client).await?;
         Some(
             cells
                 .into_iter()
