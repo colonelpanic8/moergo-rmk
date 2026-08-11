@@ -1,14 +1,15 @@
 # Go60 RMK firmware (experimental)
 
 This sibling crate is an initial RMK port for the MoErgo Go60. It currently
-targets the board's two nRF52840 halves, matrix, BLE split, Rynk control,
-30-pixel-per-half RGB chains, and the two SPI Cirque Pinnacle trackpads
+targets the board's two nRF52840 halves, matrix, half-duplex UART/TRRS split,
+BLE host communication, Rynk control, 30-pixel-per-half RGB chains, and the two SPI Cirque Pinnacle trackpads
 (relative mode with tap-to-click; the peripheral half's pad reaches the
 central over the split link).
 
 The hardware facts come from MoErgo's official `moergo-sc/zmk` Go60 board
-definitions. One feature is still deliberately omitted: automatic inter-half
-switching between BLE and half-duplex UART/TRRS.
+definitions. Each half monitors the active-high cable-detect signal and
+automatically prefers UART/TRRS while it is present, falling back to BLE when
+it is absent.
 
 Hardware qualification is required before relying on this image as a
 replacement for the supported ZMK firmware. In particular, the official board

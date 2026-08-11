@@ -1,9 +1,10 @@
 # MoErgo Go60 experimental RMK configuration.
 #
 # Matrix, pin, flash, LED, and USB facts are transcribed from the official
-# moergo-sc/zmk Go60 board definitions. The first port uses BLE between halves;
-# automatic BLE/TRRS switching remains an explicit follow-up. The Cirque
-# trackpads are wired in src/trackpad.rs, outside this file.
+# moergo-sc/zmk Go60 board definitions. This image prefers the board's
+# RS-422-backed TRRS link between halves and falls back to BLE when the cable
+# is absent. The Cirque trackpads are wired in src/trackpad.rs, outside this
+# file.
 
 [keyboard]
 name = "Go60"
@@ -170,8 +171,7 @@ insecure = false
 maintenance_lock_default = false
 
 [split]
-# TODO(go60): dynamically choose BLE or half-duplex UARTE0 from TRRS detect.
-connection = "ble"
+connection = "auto"
 
 [split.central]
 rows = 5
@@ -180,6 +180,8 @@ row_offset = 0
 col_offset = 0
 ble_addr = [0x01, 0x30, 0x36, 0x4f, 0x47, 0xc7]
 battery_adc_pin = "vddh"
+detect_pin = "P1_10"
+serial = [{ instance = "UARTE0", tx_pin = "P1_08", rx_pin = "P1_09", half_duplex = true, direction_pin = "P0_11", baudrate = 921600, timer = "TIMER2", ppi_channels = ["PPI_CH0", "PPI_CH1"] }]
 
 [split.central.matrix]
 matrix_type = "normal"
@@ -194,6 +196,8 @@ row_offset = 0
 col_offset = 7
 ble_addr = [0x02, 0x30, 0x36, 0x4f, 0x47, 0xc7]
 battery_adc_pin = "vddh"
+detect_pin = "P1_10"
+serial = [{ instance = "UARTE0", tx_pin = "P1_08", rx_pin = "P1_09", half_duplex = true, direction_pin = "P0_11", baudrate = 921600, timer = "TIMER2", ppi_channels = ["PPI_CH0", "PPI_CH1"] }]
 
 [split.peripheral.matrix]
 matrix_type = "normal"
