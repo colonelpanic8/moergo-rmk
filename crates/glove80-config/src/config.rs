@@ -23,6 +23,7 @@ use rynk::rmk_types::protocol::rynk::{
     PointingConfig as WirePointingConfig, PointingDeviceConfig as WirePointingDeviceConfig,
     PointingLayerOverride as WirePointingLayerOverride, BLE_NAME_MAX_LEN,
 };
+use rynk::{KeyId, KeyTopology};
 use serde::{Deserialize, Serialize};
 
 pub const ROWS: u8 = 6;
@@ -629,10 +630,44 @@ pub enum EffectKind {
     Breathe,
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(untagged)]
+pub enum LightingTargetConfig {
+    Led { led: u16 },
+    Key { key: u16 },
+}
+
+impl LightingTargetConfig {
+    pub const fn led(led: u16) -> Self {
+        Self::Led { led }
+    }
+
+    pub const fn key(key: u16) -> Self {
+        Self::Key { key }
+    }
+
+    pub const fn led_id(&self) -> Option<u16> {
+        match *self {
+            Self::Led { led } => Some(led),
+            Self::Key { .. } => None,
+        }
+    }
+}
+
+impl std::fmt::Display for LightingTargetConfig {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match *self {
+            Self::Led { led } => write!(formatter, "LED {led}"),
+            Self::Key { key } => write!(formatter, "key {key}"),
+        }
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord)]
 pub struct SceneConfig {
     pub layer: u8,
-    pub led: u16,
+    #[serde(flatten)]
+    pub target: LightingTargetConfig,
     pub color: String,
     #[serde(default = "solid")]
     pub effect: EffectKind,
@@ -655,7 +690,8 @@ pub struct SceneConfig {
 /// [`SceneConfig`].
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 pub struct ConditionalSceneConfig {
-    pub led: u16,
+    #[serde(flatten)]
+    pub target: LightingTargetConfig,
     pub color: String,
     #[serde(default = "solid")]
     pub effect: EffectKind,
@@ -1980,7 +2016,71 @@ fn modifier_hid_keys(packed: u8) -> Vec<u8> {
 }
 
 impl LightingConfig {
+    pub fn has_key_targets(&self) -> bool {
+        self.scenes
+            .iter()
+            .any(|cell| matches!(cell.target, LightingTargetConfig::Key { .. }))
+            || self
+                .conditional_scenes
+                .iter()
+                .any(|cell| matches!(cell.target, LightingTargetConfig::Key { .. }))
+    }
+
+    /// Resolve semantic key targets to the device's stable LED IDs. One key
+    /// may expand to any number of emitters; raw LED targets pass through.
+    pub fn resolve_key_targets(&self, topology: &KeyTopology) -> Result<Self> {
+        fn resolve(
+            target: &LightingTargetConfig,
+            topology: &KeyTopology,
+        ) -> Result<Vec<LightingTargetConfig>> {
+            match *target {
+                LightingTargetConfig::Led { led } => Ok(vec![LightingTargetConfig::led(led)]),
+                LightingTargetConfig::Key { key } => {
+                    if !topology
+                        .keys
+                        .iter()
+                        .any(|candidate| candidate.id == KeyId(key))
+                    {
+                        bail!("unknown logical key id {key}");
+                    }
+                    let leds = topology.resolve_leds(&KeyId(key));
+                    if leds.is_empty() {
+                        bail!("logical key id {key} has no associated lighting emitters");
+                    }
+                    Ok(leds
+                        .into_iter()
+                        .map(|led| LightingTargetConfig::led(led.0))
+                        .collect())
+                }
+            }
+        }
+
+        let mut resolved = self.clone();
+        resolved.scenes.clear();
+        for cell in &self.scenes {
+            for target in resolve(&cell.target, topology)? {
+                resolved.scenes.push(SceneConfig {
+                    target,
+                    ..cell.clone()
+                });
+            }
+        }
+        resolved.conditional_scenes.clear();
+        for cell in &self.conditional_scenes {
+            for target in resolve(&cell.target, topology)? {
+                resolved.conditional_scenes.push(ConditionalSceneConfig {
+                    target,
+                    ..cell.clone()
+                });
+            }
+        }
+        Ok(resolved)
+    }
+
     pub fn snapshot(&self) -> Result<LightingSnapshot> {
+        if self.has_key_targets() {
+            bail!("semantic lighting key targets must be resolved against a device topology");
+        }
         let mut conditional_scenes = self.conditional_scenes.clone();
         for (index, cell) in conditional_scenes.iter_mut().enumerate() {
             cell.color = normalize_color(&cell.color)?;
@@ -1994,12 +2094,12 @@ impl LightingConfig {
         scenes.sort();
         let duplicate = scenes
             .windows(2)
-            .find(|pair| pair[0].layer == pair[1].layer && pair[0].led == pair[1].led);
+            .find(|pair| pair[0].layer == pair[1].layer && pair[0].target == pair[1].target);
         if let Some(pair) = duplicate {
             bail!(
-                "duplicate scene cell for layer {} LED {}",
+                "duplicate scene cell for layer {} {}",
                 pair[0].layer,
-                pair[0].led
+                pair[0].target
             );
         }
         if let Some(effects) = &self.effects {
@@ -2320,17 +2420,17 @@ pub fn differences(desired: &Snapshot, live: &Snapshot) -> Vec<String> {
             let wanted_cells = wanted
                 .scenes
                 .iter()
-                .map(|cell| ((cell.layer, cell.led), cell))
+                .map(|cell| ((cell.layer, cell.target), cell))
                 .collect::<BTreeMap<_, _>>();
             let present_cells = present
                 .scenes
                 .iter()
-                .map(|cell| ((cell.layer, cell.led), cell))
+                .map(|cell| ((cell.layer, cell.target), cell))
                 .collect::<BTreeMap<_, _>>();
             for key in wanted_cells.keys().chain(present_cells.keys()) {
                 if wanted_cells.get(key) != present_cells.get(key) {
                     result.push(format!(
-                        "lighting scene layer {} LED {}: file {:?} != keyboard {:?}",
+                        "lighting scene layer {} {}: file {:?} != keyboard {:?}",
                         key.0,
                         key.1,
                         wanted_cells.get(key),
@@ -2667,24 +2767,24 @@ pub fn validate_conditional_scene(index: usize, cell: &ConditionalSceneConfig) -
     match cell.effect {
         EffectKind::Solid if timings_set => {
             bail!(
-                "solid conditional rule {index} (LED {}) has timing options",
-                cell.led
+                "solid conditional rule {index} ({}) has timing options",
+                cell.target
             )
         }
         EffectKind::Solid => {}
         EffectKind::Blink => {
             if cell.period_ms.unwrap_or(0) == 0 || cell.duty.unwrap_or(101) > 100 {
                 bail!(
-                    "blink conditional rule {index} (LED {}) needs a non-zero period_ms and a duty of 0..=100",
-                    cell.led
+                    "blink conditional rule {index} ({}) needs a non-zero period_ms and a duty of 0..=100",
+                    cell.target
                 );
             }
         }
         EffectKind::Breathe => {
             if cell.period_ms.unwrap_or(0) == 0 || cell.step_ms.unwrap_or(0) == 0 {
                 bail!(
-                    "breathe conditional rule {index} (LED {}) needs a non-zero period_ms and step_ms",
-                    cell.led
+                    "breathe conditional rule {index} ({}) needs a non-zero period_ms and step_ms",
+                    cell.target
                 );
             }
         }
@@ -2693,15 +2793,15 @@ pub fn validate_conditional_scene(index: usize, cell: &ConditionalSceneConfig) -
         let over = |level: Option<u8>| level.is_some_and(|value| value > 100);
         if over(battery.min_level) || over(battery.max_level) {
             bail!(
-                "conditional rule {index} (LED {}) has a battery level above 100",
-                cell.led
+                "conditional rule {index} ({}) has a battery level above 100",
+                cell.target
             );
         }
         if matches!((battery.min_level, battery.max_level), (Some(min), Some(max)) if min > max) {
             let (min, max) = (battery.min_level.unwrap(), battery.max_level.unwrap());
             bail!(
-                "conditional rule {index} (LED {}) has battery min_level {min} above max_level {max}",
-                cell.led
+                "conditional rule {index} ({}) has battery min_level {min} above max_level {max}",
+                cell.target
             );
         }
     }
@@ -2713,8 +2813,8 @@ pub fn validate_conditional_scene(index: usize, cell: &ConditionalSceneConfig) -
             && connection.usb_connected.is_none()
         {
             bail!(
-                "conditional rule {index} (LED {}) has a connection condition that names no gate",
-                cell.led
+                "conditional rule {index} ({}) has a connection condition that names no gate",
+                cell.target
             );
         }
         // Both bounds describe the same slot space, so they move together when
@@ -2724,8 +2824,8 @@ pub fn validate_conditional_scene(index: usize, cell: &ConditionalSceneConfig) -
             .is_some_and(|profile| profile > MAX_BLE_SLOT)
         {
             bail!(
-                "conditional rule {index} (LED {}) names a BLE profile past the board's slots (0-{MAX_BLE_SLOT})",
-                cell.led
+                "conditional rule {index} ({}) names a BLE profile past the board's slots (0-{MAX_BLE_SLOT})",
+                cell.target
             );
         }
         if connection
@@ -2733,8 +2833,8 @@ pub fn validate_conditional_scene(index: usize, cell: &ConditionalSceneConfig) -
             .is_some_and(|bonded| bonded.slot > MAX_BLE_SLOT)
         {
             bail!(
-                "conditional rule {index} (LED {}) names a bonded slot past the board's slots (0-{MAX_BLE_SLOT})",
-                cell.led
+                "conditional rule {index} ({}) names a bonded slot past the board's slots (0-{MAX_BLE_SLOT})",
+                cell.target
             );
         }
     }
@@ -2750,9 +2850,9 @@ pub fn validate_scene(cell: &SceneConfig) -> Result<()> {
                 || cell.step_ms.is_some()
             {
                 bail!(
-                    "solid scene layer {} LED {} has timing options",
+                    "solid scene layer {} {} has timing options",
                     cell.layer,
-                    cell.led
+                    cell.target
                 );
             }
         }
@@ -2762,9 +2862,9 @@ pub fn validate_scene(cell: &SceneConfig) -> Result<()> {
                 || cell.step_ms.is_some()
             {
                 bail!(
-                    "invalid blink scene at layer {} LED {}",
+                    "invalid blink scene at layer {} {}",
                     cell.layer,
-                    cell.led
+                    cell.target
                 );
             }
         }
@@ -2774,9 +2874,9 @@ pub fn validate_scene(cell: &SceneConfig) -> Result<()> {
                 || cell.duty.is_some()
             {
                 bail!(
-                    "invalid breathe scene at layer {} LED {}",
+                    "invalid breathe scene at layer {} {}",
                     cell.layer,
-                    cell.led
+                    cell.target
                 );
             }
         }
@@ -2830,7 +2930,7 @@ pub fn scene_from_wire(cell: LightingSceneCell) -> SceneConfig {
     let (color, effect, period_ms, phase_ms, duty, step_ms) = effect_from_wire(cell.effect);
     SceneConfig {
         layer: cell.layer,
-        led: cell.led_id.0,
+        target: LightingTargetConfig::led(cell.led_id.0),
         color: format!("#{:02x}{:02x}{:02x}", color.r, color.g, color.b),
         effect,
         period_ms,
@@ -2869,7 +2969,7 @@ pub fn conditional_scene_from_wire(
     ConditionalSceneConfig {
         connection,
         effects,
-        led: cell.led_id.0,
+        target: LightingTargetConfig::led(cell.led_id.0),
         color: format!("#{:02x}{:02x}{:02x}", color.r, color.g, color.b),
         effect,
         period_ms,
@@ -2926,7 +3026,11 @@ pub fn effect_to_wire(
 pub fn scene_to_wire(cell: &SceneConfig) -> Result<LightingSceneCell> {
     Ok(LightingSceneCell {
         layer: cell.layer,
-        led_id: LightingLedId(cell.led),
+        led_id: LightingLedId(
+            cell.target
+                .led_id()
+                .context("semantic scene target must be resolved before wire encoding")?,
+        ),
         effect: effect_to_wire(
             &cell.color,
             cell.effect,
@@ -2978,7 +3082,11 @@ pub fn conditional_scene_to_wire(
                 },
             }),
         },
-        led_id: LightingLedId(cell.led),
+        led_id: LightingLedId(
+            cell.target
+                .led_id()
+                .context("semantic conditional target must be resolved before wire encoding")?,
+        ),
         effect: effect_to_wire(
             &cell.color,
             cell.effect,
@@ -3235,6 +3343,79 @@ mod tests {
             pointing: None,
             lighting: None,
         }
+    }
+
+    #[test]
+    fn semantic_key_targets_round_trip_and_expand_to_every_emitter() {
+        use rynk::rmk_types::protocol::rynk::{LightingLed, LightingLedId, LightingMatrixPosition};
+
+        let key_target: SceneConfig = toml::from_str(
+            r##"layer = 2
+key = 0
+color = "#ff0000"
+"##,
+        )
+        .unwrap();
+        assert_eq!(key_target.target, LightingTargetConfig::key(0));
+        assert!(toml::to_string(&key_target).unwrap().contains("key = 0"));
+
+        let matrix = LightingMatrixPosition { row: 0, col: 0 };
+        let emitter = |id| LightingLed {
+            id: LightingLedId(id),
+            key: Some(matrix),
+            position: None,
+            zone_start: 0,
+            zone_len: 0,
+        };
+        let topology = KeyTopology::new(3, vec![matrix], vec![emitter(34), emitter(80)]).unwrap();
+        let conditional_target: ConditionalSceneConfig = toml::from_str(
+            r##"key = 0
+color = "#0000ff"
+"##,
+        )
+        .unwrap();
+        let lighting = LightingConfig {
+            brightness: 100,
+            output_mode: OutputModeConfig::AlwaysOn,
+            scene_policy: ScenePolicyConfig::EffectiveOnly,
+            background: BackgroundConfig {
+                enabled: false,
+                hue: 0,
+                saturation: 0,
+                value: 0,
+                speed: 0,
+                mode: BackgroundModeConfig::Solid,
+            },
+            effects: None,
+            scenes: vec![key_target],
+            conditional_scenes: vec![conditional_target],
+        };
+
+        let resolved = lighting.resolve_key_targets(&topology).unwrap();
+        assert_eq!(
+            resolved
+                .scenes
+                .iter()
+                .map(|scene| scene.target.clone())
+                .collect::<Vec<_>>(),
+            vec![LightingTargetConfig::led(34), LightingTargetConfig::led(80)]
+        );
+        assert!(resolved
+            .scenes
+            .iter()
+            .all(|scene| scene_to_wire(scene).is_ok()));
+        assert_eq!(
+            resolved
+                .conditional_scenes
+                .iter()
+                .map(|scene| scene.target)
+                .collect::<Vec<_>>(),
+            vec![LightingTargetConfig::led(34), LightingTargetConfig::led(80)]
+        );
+        assert!(resolved
+            .conditional_scenes
+            .iter()
+            .all(|scene| conditional_scene_to_wire(scene).is_ok()));
     }
 
     #[test]
@@ -3627,7 +3808,7 @@ Density = 6
     fn reordered_conditional_rules_are_a_difference() {
         let rule = |led: u16| ConditionalSceneConfig {
             connection: None,
-            led,
+            target: LightingTargetConfig::led(led),
             color: "#0040a0".into(),
             effect: EffectKind::Solid,
             period_ms: None,
@@ -3705,7 +3886,7 @@ Density = 6
             let mut snap = lighting_snapshot(None, None);
             snap.conditional_scenes = Some(vec![ConditionalSceneConfig {
                 connection: None,
-                led: 75,
+                target: LightingTargetConfig::led(75),
                 color: "#0040a0".into(),
                 effect: EffectKind::Solid,
                 period_ms: None,
@@ -3800,7 +3981,7 @@ Density = 6
     fn conditional_rules_round_trip_through_the_wire_and_reject_bad_batteries() {
         let mut cell = ConditionalSceneConfig {
             connection: None,
-            led: 75,
+            target: LightingTargetConfig::led(75),
             color: "#0040a0".into(),
             effect: EffectKind::Solid,
             period_ms: None,

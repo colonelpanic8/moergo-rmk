@@ -94,6 +94,12 @@ layer = { layer = 2, active = true }
 battery = { node = 1, min_level = 81, charge = "charging" }
 ```
 
+Use `key = N` instead of `led = N` in either scene table to target the logical
+key at index `N` in the keyboard's canonical layout. `config diff` and `config
+apply` resolve it through the topology advertised by the connected keyboard,
+including every emitter associated with that key. Raw LED targets remain
+available for underglow, indicators, and other emitters that are not keys.
+
 Unlike `[[lighting.scene]]`, this table is ordered: matching rules compose in
 table order and later ones win the slots they share, so `config diff` reports
 by position and reordering two rules is a real difference. The table is written

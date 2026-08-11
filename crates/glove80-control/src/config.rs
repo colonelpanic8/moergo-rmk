@@ -113,6 +113,25 @@ fn parse(path: &Path) -> Result<RuntimeConfig> {
         .with_context(|| format!("could not parse {}", path.display()))
 }
 
+async fn resolve_key_targets(client: &Client, config: RuntimeConfig) -> Result<RuntimeConfig> {
+    let Some(lighting) = config
+        .lighting
+        .as_ref()
+        .filter(|lighting| lighting.has_key_targets())
+    else {
+        return Ok(config);
+    };
+    let topology = client
+        .read_lighting_key_topology()
+        .await
+        .context("could not read semantic key topology")?;
+    let resolved = lighting.resolve_key_targets(&topology)?;
+    Ok(RuntimeConfig {
+        lighting: Some(resolved),
+        ..config
+    })
+}
+
 async fn read_extended_runtime_conditionals(
     client: &Client,
 ) -> Result<Vec<LightingExtendedConditionalSceneCell>> {
@@ -208,7 +227,8 @@ pub async fn operate(client: &Client, command: &ConfigCommand) -> Result<()> {
             println!("pulled live runtime configuration into {}", file.display());
         }
         ConfigCommand::Diff { file, exact } => {
-            let mut desired = parse(file)?.snapshot()?;
+            let config = resolve_key_targets(client, parse(file)?).await?;
+            let mut desired = config.snapshot()?;
             if *exact {
                 claim_every_behavior_table(&mut desired);
             }
@@ -222,7 +242,8 @@ pub async fn operate(client: &Client, command: &ConfigCommand) -> Result<()> {
             dry_run,
             exact,
         } => {
-            let mut desired = parse(file)?.snapshot()?;
+            let config = resolve_key_targets(client, parse(file)?).await?;
+            let mut desired = config.snapshot()?;
             if *exact {
                 claim_every_behavior_table(&mut desired);
             }
