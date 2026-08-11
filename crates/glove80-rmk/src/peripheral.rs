@@ -3,6 +3,7 @@
 
 pub const BOARD_LEDS_PER_HALF: usize = 40;
 pub const BOARD_CHANNEL_CEILING: u8 = 230;
+pub const BOARD_MAINTENANCE_LED: u16 = 12;
 
 #[allow(dead_code)] // Shared with the central binary's half-specific constructors.
 mod lighting;
