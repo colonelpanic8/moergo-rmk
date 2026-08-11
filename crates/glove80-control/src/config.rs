@@ -113,11 +113,11 @@ fn parse(path: &Path) -> Result<RuntimeConfig> {
         .with_context(|| format!("could not parse {}", path.display()))
 }
 
-async fn resolve_key_targets(client: &Client, config: RuntimeConfig) -> Result<RuntimeConfig> {
+async fn resolve_lighting_targets(client: &Client, config: RuntimeConfig) -> Result<RuntimeConfig> {
     let Some(lighting) = config
         .lighting
         .as_ref()
-        .filter(|lighting| lighting.has_key_targets())
+        .filter(|lighting| lighting.has_semantic_targets())
     else {
         return Ok(config);
     };
@@ -125,7 +125,7 @@ async fn resolve_key_targets(client: &Client, config: RuntimeConfig) -> Result<R
         .read_lighting_key_topology()
         .await
         .context("could not read semantic key topology")?;
-    let resolved = lighting.resolve_key_targets(&topology)?;
+    let resolved = lighting.resolve_semantic_targets(&topology)?;
     Ok(RuntimeConfig {
         lighting: Some(resolved),
         ..config
@@ -227,7 +227,7 @@ pub async fn operate(client: &Client, command: &ConfigCommand) -> Result<()> {
             println!("pulled live runtime configuration into {}", file.display());
         }
         ConfigCommand::Diff { file, exact } => {
-            let config = resolve_key_targets(client, parse(file)?).await?;
+            let config = resolve_lighting_targets(client, parse(file)?).await?;
             let mut desired = config.snapshot()?;
             if *exact {
                 claim_every_behavior_table(&mut desired);
@@ -242,7 +242,7 @@ pub async fn operate(client: &Client, command: &ConfigCommand) -> Result<()> {
             dry_run,
             exact,
         } => {
-            let config = resolve_key_targets(client, parse(file)?).await?;
+            let config = resolve_lighting_targets(client, parse(file)?).await?;
             let mut desired = config.snapshot()?;
             if *exact {
                 claim_every_behavior_table(&mut desired);

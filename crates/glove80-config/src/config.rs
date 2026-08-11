@@ -19,8 +19,9 @@ use rynk::rmk_types::protocol::rynk::{
     LightingConditionSet, LightingConditionalSceneCell, LightingConnectionCondition,
     LightingEffect, LightingEffectsCondition, LightingExtendedConditionalSceneCell,
     LightingExtensionState, LightingLayerCondition, LightingLayerPolicy, LightingLedId,
-    LightingNodeId, LightingOutputMode, LightingRgb8, LightingSceneCell,
-    PointingConfig as WirePointingConfig, PointingDeviceConfig as WirePointingDeviceConfig,
+    LightingMatrixPosition, LightingNodeId, LightingOutputMode, LightingRgb8, LightingSceneCell,
+    LightingZoneId, PointingConfig as WirePointingConfig,
+    PointingDeviceConfig as WirePointingDeviceConfig,
     PointingLayerOverride as WirePointingLayerOverride, BLE_NAME_MAX_LEN,
 };
 use rynk::{KeyId, KeyTopology};
@@ -634,7 +635,10 @@ pub enum EffectKind {
 #[serde(untagged)]
 pub enum LightingTargetConfig {
     Led { led: u16 },
-    Key { key: u16 },
+    KeyId { key: u16 },
+    MatrixKey { key: [u8; 2] },
+    Zone { zone: u8 },
+    All { all: bool },
 }
 
 impl LightingTargetConfig {
@@ -643,13 +647,27 @@ impl LightingTargetConfig {
     }
 
     pub const fn key(key: u16) -> Self {
-        Self::Key { key }
+        Self::KeyId { key }
+    }
+
+    pub const fn matrix_key(row: u8, col: u8) -> Self {
+        Self::MatrixKey { key: [row, col] }
+    }
+
+    pub const fn zone(zone: u8) -> Self {
+        Self::Zone { zone }
+    }
+
+    pub const fn all() -> Self {
+        Self::All { all: true }
     }
 
     pub const fn led_id(&self) -> Option<u16> {
         match *self {
             Self::Led { led } => Some(led),
-            Self::Key { .. } => None,
+            Self::KeyId { .. } | Self::MatrixKey { .. } | Self::Zone { .. } | Self::All { .. } => {
+                None
+            }
         }
     }
 }
@@ -658,7 +676,10 @@ impl std::fmt::Display for LightingTargetConfig {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match *self {
             Self::Led { led } => write!(formatter, "LED {led}"),
-            Self::Key { key } => write!(formatter, "key {key}"),
+            Self::KeyId { key } => write!(formatter, "key {key}"),
+            Self::MatrixKey { key: [row, col] } => write!(formatter, "key [{row}, {col}]"),
+            Self::Zone { zone } => write!(formatter, "zone {zone}"),
+            Self::All { .. } => formatter.write_str("all LEDs"),
         }
     }
 }
@@ -2016,26 +2037,26 @@ fn modifier_hid_keys(packed: u8) -> Vec<u8> {
 }
 
 impl LightingConfig {
-    pub fn has_key_targets(&self) -> bool {
+    pub fn has_semantic_targets(&self) -> bool {
         self.scenes
             .iter()
-            .any(|cell| matches!(cell.target, LightingTargetConfig::Key { .. }))
+            .any(|cell| !matches!(cell.target, LightingTargetConfig::Led { .. }))
             || self
                 .conditional_scenes
                 .iter()
-                .any(|cell| matches!(cell.target, LightingTargetConfig::Key { .. }))
+                .any(|cell| !matches!(cell.target, LightingTargetConfig::Led { .. }))
     }
 
-    /// Resolve semantic key targets to the device's stable LED IDs. One key
+    /// Resolve semantic targets to the device's stable LED IDs. One selector
     /// may expand to any number of emitters; raw LED targets pass through.
-    pub fn resolve_key_targets(&self, topology: &KeyTopology) -> Result<Self> {
+    pub fn resolve_semantic_targets(&self, topology: &KeyTopology) -> Result<Self> {
         fn resolve(
             target: &LightingTargetConfig,
             topology: &KeyTopology,
         ) -> Result<Vec<LightingTargetConfig>> {
             match *target {
                 LightingTargetConfig::Led { led } => Ok(vec![LightingTargetConfig::led(led)]),
-                LightingTargetConfig::Key { key } => {
+                LightingTargetConfig::KeyId { key } => {
                     if !topology
                         .keys
                         .iter()
@@ -2046,6 +2067,51 @@ impl LightingConfig {
                     let leds = topology.resolve_leds(&KeyId(key));
                     if leds.is_empty() {
                         bail!("logical key id {key} has no associated lighting emitters");
+                    }
+                    Ok(leds
+                        .into_iter()
+                        .map(|led| LightingTargetConfig::led(led.0))
+                        .collect())
+                }
+                LightingTargetConfig::MatrixKey { key: [row, col] } => {
+                    let matrix = LightingMatrixPosition { row, col };
+                    if !topology
+                        .keys
+                        .iter()
+                        .any(|candidate| candidate.matrix == matrix)
+                    {
+                        bail!("unknown matrix key [{row}, {col}]");
+                    }
+                    let leds = topology.resolve_leds(&matrix);
+                    if leds.is_empty() {
+                        bail!("matrix key [{row}, {col}] has no associated lighting emitters");
+                    }
+                    Ok(leds
+                        .into_iter()
+                        .map(|led| LightingTargetConfig::led(led.0))
+                        .collect())
+                }
+                LightingTargetConfig::Zone { zone } => {
+                    let zone_id = LightingZoneId(zone);
+                    if !topology.has_zone(zone_id) {
+                        bail!("unknown lighting zone {zone}");
+                    }
+                    let leds = topology.resolve_zone_leds(zone_id);
+                    if leds.is_empty() {
+                        bail!("lighting zone {zone} has no associated lighting emitters");
+                    }
+                    Ok(leds
+                        .into_iter()
+                        .map(|led| LightingTargetConfig::led(led.0))
+                        .collect())
+                }
+                LightingTargetConfig::All { all } => {
+                    if !all {
+                        bail!("the all lighting selector must be true");
+                    }
+                    let leds = topology.all_leds();
+                    if leds.is_empty() {
+                        bail!("the device has no lighting emitters");
                     }
                     Ok(leds
                         .into_iter()
@@ -3343,8 +3409,10 @@ mod tests {
     }
 
     #[test]
-    fn semantic_key_targets_round_trip_and_expand_to_every_emitter() {
-        use rynk::rmk_types::protocol::rynk::{LightingLed, LightingLedId, LightingMatrixPosition};
+    fn semantic_lighting_targets_round_trip_and_expand_to_emitters() {
+        use rynk::rmk_types::protocol::rynk::{
+            LightingLed, LightingLedId, LightingMatrixPosition, LightingZone, LightingZoneId,
+        };
 
         let key_target: SceneConfig = toml::from_str(
             r##"layer = 2
@@ -3356,17 +3424,75 @@ color = "#ff0000"
         assert_eq!(key_target.target, LightingTargetConfig::key(0));
         assert!(toml::to_string(&key_target).unwrap().contains("key = 0"));
 
+        let matrix_target: SceneConfig = toml::from_str(
+            r##"layer = 2
+key = [0, 0]
+color = "#ff0000"
+"##,
+        )
+        .unwrap();
+        assert_eq!(matrix_target.target, LightingTargetConfig::matrix_key(0, 0));
+        assert!(toml::to_string(&matrix_target)
+            .unwrap()
+            .contains("key = [0, 0]"));
+
+        let zone_target: SceneConfig = toml::from_str(
+            r##"layer = 2
+zone = 2
+color = "#ff0000"
+"##,
+        )
+        .unwrap();
+        assert_eq!(zone_target.target, LightingTargetConfig::zone(2));
+
+        let all_target: SceneConfig = toml::from_str(
+            r##"layer = 2
+all = true
+color = "#ff0000"
+"##,
+        )
+        .unwrap();
+        assert_eq!(all_target.target, LightingTargetConfig::all());
+
         let matrix = LightingMatrixPosition { row: 0, col: 0 };
-        let emitter = |id| LightingLed {
+        let other_matrix = LightingMatrixPosition { row: 0, col: 1 };
+        let emitter = |id, key, zone_start, zone_len| LightingLed {
             id: LightingLedId(id),
-            key: Some(matrix),
+            key,
             position: None,
-            zone_start: 0,
-            zone_len: 0,
+            zone_start,
+            zone_len,
         };
-        let topology = KeyTopology::new(3, vec![matrix], vec![emitter(34), emitter(80)]).unwrap();
+        let topology = KeyTopology::new(
+            3,
+            vec![matrix, other_matrix],
+            vec![
+                emitter(34, Some(matrix), 0, 1),
+                emitter(80, Some(matrix), 1, 2),
+                emitter(22, Some(other_matrix), 3, 1),
+                emitter(99, None, 4, 1),
+            ],
+            vec![
+                LightingZone {
+                    id: LightingZoneId(1),
+                    name: "keys".try_into().unwrap(),
+                },
+                LightingZone {
+                    id: LightingZoneId(2),
+                    name: "accent".try_into().unwrap(),
+                },
+            ],
+            vec![
+                LightingZoneId(1),
+                LightingZoneId(1),
+                LightingZoneId(2),
+                LightingZoneId(2),
+                LightingZoneId(2),
+            ],
+        )
+        .unwrap();
         let conditional_target: ConditionalSceneConfig = toml::from_str(
-            r##"key = 0
+            r##"key = [0, 0]
 color = "#0000ff"
 "##,
         )
@@ -3384,7 +3510,7 @@ color = "#0000ff"
                 mode: BackgroundModeConfig::Solid,
             },
             effects: None,
-            scenes: vec![key_target],
+            scenes: vec![key_target, matrix_target, zone_target, all_target],
             conditional_scenes: vec![conditional_target],
         };
 
@@ -3392,16 +3518,28 @@ color = "#0000ff"
         config.lighting = Some(lighting.clone());
         let encoded = config.to_toml().unwrap();
         let decoded = RuntimeConfig::from_toml(&encoded).unwrap();
-        assert!(decoded.lighting.unwrap().has_key_targets());
+        assert!(decoded.lighting.unwrap().has_semantic_targets());
 
-        let resolved = lighting.resolve_key_targets(&topology).unwrap();
+        let resolved = lighting.resolve_semantic_targets(&topology).unwrap();
         assert_eq!(
             resolved
                 .scenes
                 .iter()
                 .map(|scene| scene.target.clone())
                 .collect::<Vec<_>>(),
-            vec![LightingTargetConfig::led(34), LightingTargetConfig::led(80)]
+            vec![
+                LightingTargetConfig::led(34),
+                LightingTargetConfig::led(80),
+                LightingTargetConfig::led(34),
+                LightingTargetConfig::led(80),
+                LightingTargetConfig::led(80),
+                LightingTargetConfig::led(22),
+                LightingTargetConfig::led(99),
+                LightingTargetConfig::led(34),
+                LightingTargetConfig::led(80),
+                LightingTargetConfig::led(22),
+                LightingTargetConfig::led(99),
+            ]
         );
         assert!(resolved
             .scenes
@@ -3419,6 +3557,31 @@ color = "#0000ff"
             .conditional_scenes
             .iter()
             .all(|scene| conditional_scene_to_wire(scene).is_ok()));
+
+        for (target, expected) in [
+            (LightingTargetConfig::key(99), "unknown logical key id 99"),
+            (
+                LightingTargetConfig::matrix_key(9, 9),
+                "unknown matrix key [9, 9]",
+            ),
+            (LightingTargetConfig::zone(99), "unknown lighting zone 99"),
+            (
+                LightingTargetConfig::All { all: false },
+                "the all lighting selector must be true",
+            ),
+        ] {
+            let mut invalid = lighting.clone();
+            invalid.scenes = vec![SceneConfig {
+                target,
+                ..invalid.scenes[0].clone()
+            }];
+            invalid.conditional_scenes.clear();
+            assert!(invalid
+                .resolve_semantic_targets(&topology)
+                .unwrap_err()
+                .to_string()
+                .contains(expected));
+        }
     }
 
     #[test]
