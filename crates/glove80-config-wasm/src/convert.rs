@@ -69,6 +69,8 @@ pub fn snapshot_from_wire(
         .transpose()?;
 
     Ok(model::Snapshot {
+        rows: model::ROWS,
+        cols: model::COLS,
         bluetooth_name: snapshot.bluetooth_name.clone(),
         default_layer: snapshot.default_layer,
         layers,
@@ -104,6 +106,7 @@ pub fn snapshot_from_wire(
             macros: snapshot.behaviors.macros.clone(),
             forks: snapshot.behaviors.forks.clone(),
         },
+        pointing: None,
     })
 }
 
