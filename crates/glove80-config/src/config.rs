@@ -3500,6 +3500,7 @@ color = "#0000ff"
         let lighting = LightingConfig {
             brightness: 100,
             output_mode: OutputModeConfig::AlwaysOn,
+            wake_layers: Vec::new(),
             scene_policy: ScenePolicyConfig::EffectiveOnly,
             background: BackgroundConfig {
                 enabled: false,
