@@ -9,6 +9,7 @@ pub const BOARD_MAINTENANCE_LED: u16 = 8;
 
 #[path = "../../glove80-rmk/src/central_lighting.rs"]
 mod central_lighting;
+mod device_data;
 #[allow(dead_code)]
 #[path = "../../glove80-rmk/src/lighting.rs"]
 mod lighting;
@@ -61,6 +62,10 @@ mod keyboard_central {
         ::rmk::host::HostService::new(&keymap, &rmk_config)
             .with_lighting(crate::central_lighting::rynk_controller())
             .with_peripheral_bootloader(crate::route_peripheral_bootloader)
+            .with_device_data(
+                crate::device_data::descriptor(),
+                crate::device_data::record_at,
+            )
             .with_build_label(build_label.as_str())
     }
 

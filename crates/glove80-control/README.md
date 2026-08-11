@@ -15,6 +15,7 @@ The top-level commands are:
 
 - `config validate|diff|apply|pull|show`
 - `connection status|switch|clear|name`
+- `device-data` (namespaced static metadata and live state as JSON)
 - `keymap read|set|default|monitor|find`
 - `lighting ping|caps|set|unset|clear|read|frame|replica-status|replace|brightness`
 - `lighting scene-read|scene-set|scene-unset|scene-policy|params`

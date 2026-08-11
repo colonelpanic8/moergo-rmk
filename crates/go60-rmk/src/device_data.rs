@@ -1,0 +1,52 @@
+use rmk::types::protocol::rynk::{
+    DeviceDataDescriptor, DeviceDataRecord, DeviceDataValue, DeviceDataVolatility,
+};
+
+const RECORD_COUNT: u8 = 4;
+
+pub fn descriptor() -> DeviceDataDescriptor {
+    DeviceDataDescriptor {
+        namespace: "com.moergo.go60".try_into().unwrap(),
+        schema_version: 1,
+        record_count: RECORD_COUNT,
+    }
+}
+
+fn text(value: &str) -> DeviceDataValue {
+    DeviceDataValue::Text(value.try_into().unwrap())
+}
+
+fn record(key: &str, volatility: DeviceDataVolatility, value: DeviceDataValue) -> DeviceDataRecord {
+    DeviceDataRecord {
+        key: key.try_into().unwrap(),
+        volatility,
+        value,
+    }
+}
+
+pub fn record_at(index: u8) -> Option<DeviceDataRecord> {
+    let wired = rmk::split::selector::wired_selected();
+    match index {
+        0 => Some(record(
+            "device.model",
+            DeviceDataVolatility::Static,
+            text("go60"),
+        )),
+        1 => Some(record(
+            "split.policy",
+            DeviceDataVolatility::Static,
+            text("auto"),
+        )),
+        2 => Some(record(
+            "split.activeTransport",
+            DeviceDataVolatility::Live,
+            text(if wired { "wired" } else { "ble" }),
+        )),
+        3 => Some(record(
+            "split.cableDetected",
+            DeviceDataVolatility::Live,
+            DeviceDataValue::Bool(wired),
+        )),
+        _ => None,
+    }
+}
