@@ -7,8 +7,9 @@ BLE host communication, Rynk control, 30-pixel-per-half RGB chains, and the two 
 central over the split link).
 
 The hardware facts come from MoErgo's official `moergo-sc/zmk` Go60 board
-definitions. Automatic inter-half fallback from UART/TRRS to BLE is not yet
-implemented.
+definitions. Each half monitors the active-high cable-detect signal and
+automatically prefers UART/TRRS while it is present, falling back to BLE when
+it is absent.
 
 Hardware qualification is required before relying on this image as a
 replacement for the supported ZMK firmware. In particular, the official board

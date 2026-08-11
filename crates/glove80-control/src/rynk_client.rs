@@ -101,6 +101,36 @@ pub fn run_maintenance(selector: &Selector) -> Result<()> {
     })
 }
 
+pub fn run_device_data(selector: &Selector) -> Result<()> {
+    let runtime =
+        tokio::runtime::Runtime::new().context("could not create the Rynk async runtime")?;
+    runtime.block_on(async {
+        match select_device(selector).await? {
+            Device::Hid(device) => run_device_data_device(device).await,
+            Device::Ble(device) => run_device_data_device(device).await,
+        }
+    })
+}
+
+async fn run_device_data_device<D: RynkDevice>(device: D) -> Result<()> {
+    let label = device.label();
+    let (client, mut driver) = connect_device(device, &label).await?;
+    match select(driver.run(&client), read_device_data(&client)).await {
+        Either::First(error) => Err(anyhow!("Rynk connection to {label} ended: {error}")),
+        Either::Second(result) => result,
+    }
+}
+
+async fn read_device_data(client: &Client) -> Result<()> {
+    let descriptor = client.get_device_data_descriptor().await?;
+    let mut records = Vec::with_capacity(descriptor.record_count as usize);
+    for index in 0..descriptor.record_count {
+        records.push(client.get_device_data_record(index).await?);
+    }
+    println!("{}", crate::device_data::render(&descriptor, &records)?);
+    Ok(())
+}
+
 pub fn run_connection(selector: &Selector, command: &ConnectionCommand) -> Result<()> {
     let runtime =
         tokio::runtime::Runtime::new().context("could not create the Rynk async runtime")?;
