@@ -47,6 +47,10 @@ Run the CLI directly with `cargo run -p glove80-control -- --help`. See
 commands and [`crates/glove80-rmk/README.md`](crates/glove80-rmk/README.md) for
 firmware details.
 
+Boards may register typed, namespaced device data through Rynk. The Go60 uses
+this for its automatic split policy, active wired/BLE transport, and cable
+detect state; query it with `glove80-control device-data` for JSON output.
+
 ## Release artifacts
 
 `just dist` requires a clean repository and the exact clean RMK submodule

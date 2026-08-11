@@ -9,6 +9,7 @@ use glove80_config::{keycodes, rynk_keycode};
 
 mod config;
 mod connection;
+mod device_data;
 mod keymap;
 mod lighting;
 mod rynk_client;
@@ -57,6 +58,8 @@ enum Command {
         #[command(subcommand)]
         command: connection::ConnectionCommand,
     },
+    /// Print board-defined static metadata and live state as JSON.
+    DeviceData,
     /// Read and edit the live keymap.
     Keymap {
         #[command(subcommand)]
@@ -89,6 +92,7 @@ fn run(cli: Cli) -> Result<()> {
     match &cli.command {
         Command::Config { command } => config::run(&selector(&cli), command),
         Command::Connection { command } => connection::run(&selector(&cli), command),
+        Command::DeviceData => device_data::run(&selector(&cli)),
         Command::Lighting { command } => lighting::run(&selector(&cli), command),
         Command::Keymap { command } => keymap::run(&selector(&cli), command),
         Command::Maintenance => rynk_client::run_maintenance(&selector(&cli)),
