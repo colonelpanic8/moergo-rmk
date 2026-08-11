@@ -3,6 +3,7 @@
 
 pub const BOARD_LEDS_PER_HALF: usize = 40;
 pub const BOARD_CHANNEL_CEILING: u8 = 230;
+pub const BOARD_MAINTENANCE_LED: u16 = 12;
 
 mod central_lighting;
 #[allow(dead_code)] // This shared module also contains the peripheral receiver.

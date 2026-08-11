@@ -4,6 +4,8 @@
 pub const BOARD_LEDS_PER_HALF: usize = 30;
 // MoErgo warns that Go60 RGB above 40% can exceed 500 mA.
 pub const BOARD_CHANNEL_CEILING: u8 = 102;
+// R on the Go60 matrix is LED 8; the Glove80's corresponding LED is 12.
+pub const BOARD_MAINTENANCE_LED: u16 = 8;
 
 #[path = "../../glove80-rmk/src/central_lighting.rs"]
 mod central_lighting;

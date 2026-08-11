@@ -79,7 +79,7 @@ pub const COMMAND_CAPACITY: usize = 4;
 pub const REACTIVE_HITS: usize = 16;
 
 const MAGIC_LAYER: u8 = 2;
-const MAINTENANCE_LED: LedSlot = LedSlot(12);
+const MAINTENANCE_LED: LedSlot = LedSlot(crate::BOARD_MAINTENANCE_LED);
 const MAINTENANCE_ENABLED: Rgb8 = Rgb8::new(0, 128, 0);
 const MAINTENANCE_DISABLED: Rgb8 = Rgb8::new(128, 0, 0);
 
