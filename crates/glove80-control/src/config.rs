@@ -22,7 +22,8 @@ use rynk::rmk_types::protocol::rynk::{
     MorseProfileEntry as WireMorseProfileEntry, RynkError, SetAutoMouseLayerConfigsRequest,
     SetKeymapBulkRequest, SetLightingExtensionLayersRequest, SetLightingExtensionParamRequest,
     SetLightingExtensionStateRequest, SetLightingLayerPolicyRequest, SetLightingOutputModeRequest,
-    SetLightingStateRequest, SetMorseHoldTriggerPositionsRequest, SetMorseProfileEntryRequest,
+    SetLightingStateRequest, SetLightingWakeLayersRequest, SetMorseHoldTriggerPositionsRequest,
+    SetMorseProfileEntryRequest,
 };
 use rynk::{Client, RynkHostError};
 
@@ -295,14 +296,28 @@ async fn read_snapshot(client: &Client) -> Result<Snapshot> {
 
     let lighting_caps = client.get_lighting_capabilities().await?;
     let state = client.get_lighting_state().await?;
-    let output_mode = if lighting_caps
+    let output_mode_state = if lighting_caps
         .features
         .contains(LightingFeatureFlags::OUTPUT_MODE)
     {
-        output_mode_from_wire(client.get_lighting_output_mode().await?.mode)
+        Some(client.get_lighting_output_mode().await?)
     } else {
-        OutputModeConfig::AlwaysOn
+        None
     };
+    let output_mode = output_mode_state
+        .as_ref()
+        .map_or(OutputModeConfig::AlwaysOn, |state| {
+            output_mode_from_wire(state.mode)
+        });
+    let wake_layers = output_mode_state
+        .as_ref()
+        .map(|state| {
+            (0..64)
+                .filter(|layer| state.wake_layers & (1u64 << layer) != 0)
+                .map(|layer| layer as u8)
+                .collect()
+        })
+        .unwrap_or_default();
     let scene_status = client.get_lighting_scene_status().await?;
     let (_, scene_cells) = client.read_all_lighting_scenes().await?;
     // Firmware that predates the runtime conditional table reports nothing
@@ -389,6 +404,7 @@ async fn read_snapshot(client: &Client) -> Result<Snapshot> {
         lighting: Some(LightingSnapshot {
             brightness: state.output_brightness,
             output_mode,
+            wake_layers,
             scene_policy: scene_policy_from_wire(scene_status.policy),
             conditional_scenes,
             background: background_from_wire(state.background),
@@ -1000,6 +1016,19 @@ async fn apply_snapshot(client: &Client, desired: &Snapshot, before: &Snapshot) 
                 .set_lighting_output_mode(SetLightingOutputModeRequest {
                     expected_revision: revision,
                     mode: output_mode_to_wire(wanted.output_mode),
+                })
+                .await?;
+        }
+        if wanted.wake_layers != present.wake_layers {
+            let layers = wanted
+                .wake_layers
+                .iter()
+                .fold(0u64, |mask, layer| mask | (1u64 << layer));
+            let revision = client.get_lighting_state().await?.revision;
+            client
+                .set_lighting_wake_layers(SetLightingWakeLayersRequest {
+                    expected_revision: revision,
+                    layers,
                 })
                 .await?;
         }

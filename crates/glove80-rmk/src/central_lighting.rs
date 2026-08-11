@@ -221,6 +221,7 @@ pub fn init<'keymap, 'data>(
     persisted_runtime_conditional_scenes: &[LightingExtendedConditionalSceneCell],
     persisted_extension: Option<::rmk::storage::LightingExtensionRecord>,
     persisted_overlay: Option<::rmk::storage::LightingExtensionOverlayRecord>,
+    persisted_wake_layers: Option<u64>,
     spi: Peri<'static, SPI3>,
     data_pin: Peri<'static, impl Pin>,
     chain_power_pin: Peri<'static, impl Pin>,
@@ -232,7 +233,11 @@ pub fn init<'keymap, 'data>(
     COMMAND_CAPACITY,
 > {
     let provider = KeymapLightingState::new(keymap).expect("board layer count fits lighting state");
-    let mut engine = crate::lighting::engine(persisted_extension, persisted_overlay);
+    let mut engine = crate::lighting::engine(
+        persisted_extension,
+        persisted_overlay,
+        persisted_wake_layers,
+    );
     install_lighting_scenes(
         &mut engine,
         &crate::LIGHTING_TOPOLOGY,

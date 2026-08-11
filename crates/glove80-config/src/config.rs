@@ -510,6 +510,8 @@ pub enum MacroOperationConfig {
 pub struct LightingConfig {
     pub brightness: u8,
     pub output_mode: OutputModeConfig,
+    #[serde(default)]
+    pub wake_layers: Vec<u8>,
     pub scene_policy: ScenePolicyConfig,
     pub background: BackgroundConfig,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1040,6 +1042,7 @@ pub struct BehaviorSnapshot {
 pub struct LightingSnapshot {
     pub brightness: u8,
     pub output_mode: OutputModeConfig,
+    pub wake_layers: Vec<u8>,
     pub scene_policy: ScenePolicyConfig,
     pub background: BackgroundConfig,
     pub effects: Option<EffectsConfig>,
@@ -1208,6 +1211,15 @@ impl RuntimeConfig {
             .transpose()?;
         let behavior = self.behavior.as_ref();
         let layer_count = layers.len();
+        if let Some(lighting) = &lighting {
+            for layer in &lighting.wake_layers {
+                if usize::from(*layer) >= layer_count {
+                    bail!(
+                        "lighting wake layer {layer} is outside the {layer_count} configured layers"
+                    );
+                }
+            }
+        }
         Ok(Snapshot {
             rows: self.rows,
             cols: self.cols,
@@ -2000,9 +2012,13 @@ impl LightingConfig {
                 }
             }
         }
+        let mut wake_layers = self.wake_layers.clone();
+        wake_layers.sort_unstable();
+        wake_layers.dedup();
         Ok(LightingSnapshot {
             brightness: self.brightness,
             output_mode: self.output_mode,
+            wake_layers,
             scene_policy: self.scene_policy,
             background: self.background.clone(),
             effects: self.effects.clone(),
@@ -2016,6 +2032,7 @@ impl LightingConfig {
         Self {
             brightness: snapshot.brightness,
             output_mode: snapshot.output_mode,
+            wake_layers: snapshot.wake_layers.clone(),
             scene_policy: snapshot.scene_policy,
             background: snapshot.background.clone(),
             effects: snapshot.effects.clone(),
@@ -2275,6 +2292,12 @@ pub fn differences(desired: &Snapshot, live: &Snapshot) -> Vec<String> {
                 result.push(format!(
                     "lighting output mode: file {:?} != keyboard {:?}",
                     wanted.output_mode, present.output_mode
+                ));
+            }
+            if wanted.wake_layers != present.wake_layers {
+                result.push(format!(
+                    "lighting wake layers: file {:?} != keyboard {:?}",
+                    wanted.wake_layers, present.wake_layers
                 ));
             }
             if wanted.scene_policy != present.scene_policy {
@@ -3857,6 +3880,7 @@ Density = 6
         LightingSnapshot {
             brightness: 100,
             output_mode: OutputModeConfig::AlwaysOn,
+            wake_layers: Vec::new(),
             scene_policy: ScenePolicyConfig::EffectiveOnly,
             background: BackgroundConfig {
                 enabled: false,

@@ -424,6 +424,7 @@ const LEGACY_STORM_OVERLAY: u8 = 6;
 pub fn engine(
     persisted_extension: Option<LightingExtensionRecord>,
     persisted_overlay: Option<LightingExtensionOverlayRecord>,
+    persisted_wake_layers: Option<u64>,
 ) -> Engine {
     // Effect index 7 used to mean the combined Storm effect and now means
     // Crosshair. Old Storm advertised at most six parameters, while every
@@ -484,6 +485,10 @@ pub fn engine(
         &HIT_QUEUE,
         config,
     );
+    let mut controls = crate::LIGHTING_CONTROLS;
+    if let Some(wake_layers) = persisted_wake_layers {
+        controls.wake_layers = wake_layers;
+    }
     Engine::new(
         crate::LIGHTING_BACKGROUND,
         crate::LIGHTING_LAYER_SCENES,
@@ -493,7 +498,7 @@ pub fn engine(
             &BOARD_BATTERIES,
         )),
     )
-    .with_controls(crate::LIGHTING_CONTROLS)
+    .with_controls(controls)
     .with_battery_status_provider(&BOARD_BATTERIES)
 }
 
@@ -776,7 +781,7 @@ pub fn init_peripheral(
     // central replicates to it, so it boots on the compiled defaults.
     let service = LightingService::new(
         PeripheralState,
-        engine(None, None),
+        engine(None, None, None),
         LogicalFrame::new(Rgb8::BLACK),
     );
     let output = HalfOutput::right(LightingHardware::new(spi, data_pin, chain_power_pin));

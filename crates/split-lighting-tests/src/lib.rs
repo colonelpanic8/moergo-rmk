@@ -70,6 +70,11 @@ fn existing_split_messages_round_trip() {
             mutable: mutable(),
             output_mode: OutputMode::PoweredOnly,
         },
+        Message::WakeLayers {
+            generation: 7,
+            revision: 0x1234_5678,
+            wake_layers: 1 << 2,
+        },
         Message::Context {
             generation: 7,
             revision: 0x1234_5678,
@@ -147,7 +152,7 @@ fn semantic_context_packets_reserve_but_do_not_carry_layer_state() {
 
 #[test]
 fn unknown_or_wrong_version_packets_are_ignored_safely() {
-    let unknown = SplitAppData::new(&[10, 0xff]).unwrap();
+    let unknown = SplitAppData::new(&[11, 0xff]).unwrap();
     assert_eq!(Message::decode(unknown), Err(DecodeError::Tag));
 
     let wrong_version = SplitAppData::new(&[9, 5, 1, 0, 0, 0, 0]).unwrap();
@@ -280,6 +285,7 @@ fn replica(
         revision: 7,
         mutable: mutable(),
         output_mode: OutputMode::AlwaysOn,
+        wake_layers: 1 << 2,
         overlay,
         scenes,
         runtime_conditional_scenes: conditional,
