@@ -2078,9 +2078,6 @@ impl LightingConfig {
     }
 
     pub fn snapshot(&self) -> Result<LightingSnapshot> {
-        if self.has_key_targets() {
-            bail!("semantic lighting key targets must be resolved against a device topology");
-        }
         let mut conditional_scenes = self.conditional_scenes.clone();
         for (index, cell) in conditional_scenes.iter_mut().enumerate() {
             cell.color = normalize_color(&cell.color)?;
@@ -3390,6 +3387,12 @@ color = "#0000ff"
             scenes: vec![key_target],
             conditional_scenes: vec![conditional_target],
         };
+
+        let mut config = minimal_runtime_config(None);
+        config.lighting = Some(lighting.clone());
+        let encoded = config.to_toml().unwrap();
+        let decoded = RuntimeConfig::from_toml(&encoded).unwrap();
+        assert!(decoded.lighting.unwrap().has_key_targets());
 
         let resolved = lighting.resolve_key_targets(&topology).unwrap();
         assert_eq!(
