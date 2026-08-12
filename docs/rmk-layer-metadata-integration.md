@@ -1,7 +1,7 @@
 # RMK persistent layer metadata integration
 
 This repository is qualified against generated RMK commit
-`71b81a07dd5a65253b5d9abb25382ceb732219c4`.
+`9d064b8f1347919b0ba7c3b25c06a73d9fcb7395`.
 
 That commit was generated locally by `fork-assembler` from the RMK assembly
 base `1a411da55bca` with the following first entry:
@@ -23,8 +23,10 @@ The assembly resolution must retain all of these coherence changes:
   introduced later in the stack;
 - the existing pointing-config endpoints in `rynk-wasm`, which layer
   structural rewrites use to preserve pointing layer overrides.
+- the wake-layer mask in `StandardState` and `StandardReplicaState`, including
+  snapshot capture/application, so split renderers preserve runtime rewrites.
 
 The generated qualification tree contains those resolutions and the complete
-30-entry carried stack. Its parent `c01e8602975d` contains the protocol and
-configuration resolutions; the final generated patch commit adds the retained
-pointing WASM endpoints.
+carried stack. Its final generated patch commit adds the retained pointing
+WASM endpoints after the runtime-lighting patch and its replica-state
+resolution.
