@@ -1,19 +1,10 @@
 #![no_main]
 #![no_std]
 
-pub const BOARD_LEDS_PER_HALF: usize = 30;
-pub const BOARD_CHANNEL_CEILING: u8 = 102;
-pub const BOARD_MAINTENANCE_LED: u16 = 8;
-
-#[allow(dead_code)]
-#[path = "../../glove80-rmk/src/lighting.rs"]
-mod lighting;
-#[allow(dead_code)]
-#[path = "../../glove80-rmk/src/split_lighting.rs"]
-mod split_lighting;
 #[allow(dead_code)]
 mod trackpad;
 
+use moergo_rmk::lighting;
 use rmk::macros::rmk_peripheral;
 
 #[rmk_peripheral(id = 0)]

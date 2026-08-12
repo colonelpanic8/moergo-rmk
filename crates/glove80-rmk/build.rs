@@ -101,20 +101,20 @@ fn vial_config_generation() {
 ///
 /// The firmware reports its crate semver plus the git state of the build tree.
 /// A downstream configuration repository may also provide its full commit and
-/// dirty state through `GLOVE80_CONFIG_GIT_COMMIT` and
-/// `GLOVE80_CONFIG_GIT_DIRTY`. These `rustc-env` values are composed with RMK's
+/// dirty state through `MOERGO_CONFIG_GIT_COMMIT` and
+/// `MOERGO_CONFIG_GIT_DIRTY`. These `rustc-env` values are composed with RMK's
 /// version in `central.rs`:
 ///
-/// - `GLOVE80_GIT_HASH`: `git rev-parse --short=8 HEAD`, exactly 8 ASCII
+/// - `MOERGO_REPO_GIT_HASH`: `git rev-parse --short=8 HEAD`, exactly 8 ASCII
 ///   chars (padded with '0' on the right if git ever yields fewer). The
 ///   literal `unknown0` when git is unavailable.
-/// - `GLOVE80_GIT_DIRTY`: `1` if `git status --porcelain` reports any
+/// - `MOERGO_REPO_GIT_DIRTY`: `1` if `git status --porcelain` reports any
 ///   uncommitted change, else `0` (also `0` on the no-git fallback).
-/// - `GLOVE80_CONFIG_GIT_HASH`: the first eight hexadecimal characters of the
+/// - `MOERGO_CONFIG_GIT_HASH`: the first eight hexadecimal characters of the
 ///   downstream configuration commit, or `standalone` when this repository is
 ///   built directly.
-/// - `GLOVE80_CONFIG_GIT_DIRTY`: normalized to `1` or `0`.
-/// - `GLOVE80_RMK_GIT_VERSION`: the pinned RMK submodule's full `git describe`
+/// - `MOERGO_CONFIG_GIT_DIRTY`: normalized to `1` or `0`.
+/// - `MOERGO_RMK_GIT_VERSION`: the pinned RMK submodule's full `git describe`
 ///   identity (for example `rmk-v0.8.2-837-g566cbcf9`). Release builds pass
 ///   this explicitly; direct Cargo builds derive it from the submodule.
 ///
@@ -123,9 +123,11 @@ fn vial_config_generation() {
 /// dirty-flag change without a HEAD move is only picked up by the next
 /// rebuild that runs this script anyway.
 fn version_embedding() {
+    println!("cargo:rerun-if-env-changed=MOERGO_CONFIG_GIT_COMMIT");
     println!("cargo:rerun-if-env-changed=GLOVE80_CONFIG_GIT_COMMIT");
+    println!("cargo:rerun-if-env-changed=MOERGO_CONFIG_GIT_DIRTY");
     println!("cargo:rerun-if-env-changed=GLOVE80_CONFIG_GIT_DIRTY");
-    println!("cargo:rerun-if-env-changed=GLOVE80_RMK_GIT_VERSION");
+    println!("cargo:rerun-if-env-changed=MOERGO_RMK_GIT_VERSION");
 
     // Two levels up: <repo root>/.git/HEAD (this crate is crates/glove80-rmk).
     // HEAD only changes on checkout/branch switch; ordinary commits move the
@@ -162,31 +164,36 @@ fn version_embedding() {
             .filter(|out| out.status.success())
             .is_some_and(|out| !out.stdout.is_empty())
     };
-    println!("cargo:rustc-env=GLOVE80_GIT_HASH={hash}");
-    println!("cargo:rustc-env=GLOVE80_GIT_DIRTY={}", dirty as u8);
+    println!("cargo:rustc-env=MOERGO_REPO_GIT_HASH={hash}");
+    println!("cargo:rustc-env=MOERGO_REPO_GIT_DIRTY={}", dirty as u8);
 
-    let config_commit = env::var("GLOVE80_CONFIG_GIT_COMMIT").unwrap_or_default();
+    let config_commit = env::var("MOERGO_CONFIG_GIT_COMMIT")
+        .or_else(|_| env::var("GLOVE80_CONFIG_GIT_COMMIT"))
+        .unwrap_or_default();
     let config_hash = if config_commit.is_empty() {
         "standalone".to_owned()
     } else {
         assert!(
             config_commit.len() >= 8 && config_commit.bytes().all(|byte| byte.is_ascii_hexdigit()),
-            "GLOVE80_CONFIG_GIT_COMMIT must contain at least eight hexadecimal characters"
+            "MOERGO_CONFIG_GIT_COMMIT must contain at least eight hexadecimal characters"
         );
         config_commit[..8].to_ascii_lowercase()
     };
-    let config_dirty = match env::var("GLOVE80_CONFIG_GIT_DIRTY").as_deref() {
+    let config_dirty = match env::var("MOERGO_CONFIG_GIT_DIRTY")
+        .or_else(|_| env::var("GLOVE80_CONFIG_GIT_DIRTY"))
+        .as_deref()
+    {
         Ok("1" | "true") => true,
         Ok("0" | "false") | Err(_) => false,
-        Ok(value) => panic!("GLOVE80_CONFIG_GIT_DIRTY must be true/false or 1/0, got {value}"),
+        Ok(value) => panic!("MOERGO_CONFIG_GIT_DIRTY must be true/false or 1/0, got {value}"),
     };
-    println!("cargo:rustc-env=GLOVE80_CONFIG_GIT_HASH={config_hash}");
+    println!("cargo:rustc-env=MOERGO_CONFIG_GIT_HASH={config_hash}");
     println!(
-        "cargo:rustc-env=GLOVE80_CONFIG_GIT_DIRTY={}",
+        "cargo:rustc-env=MOERGO_CONFIG_GIT_DIRTY={}",
         config_dirty as u8
     );
 
-    let rmk_git_version = env::var("GLOVE80_RMK_GIT_VERSION")
+    let rmk_git_version = env::var("MOERGO_RMK_GIT_VERSION")
         .ok()
         .filter(|value| !value.is_empty())
         .or_else(|| {
@@ -208,7 +215,7 @@ fn version_embedding() {
         .unwrap_or_else(|| "unknown".to_owned());
     assert!(
         rmk_git_version.len() <= 48 && rmk_git_version.bytes().all(|byte| byte.is_ascii_graphic()),
-        "GLOVE80_RMK_GIT_VERSION must be 1-48 printable ASCII characters"
+        "MOERGO_RMK_GIT_VERSION must be 1-48 printable ASCII characters"
     );
-    println!("cargo:rustc-env=GLOVE80_RMK_GIT_VERSION={rmk_git_version}");
+    println!("cargo:rustc-env=MOERGO_RMK_GIT_VERSION={rmk_git_version}");
 }

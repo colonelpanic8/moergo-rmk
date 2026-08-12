@@ -26,8 +26,11 @@ fn link_script_setup() {
 fn version_embedding() {
     println!("cargo:rerun-if-env-changed=GO60_GIT_COMMIT");
     println!("cargo:rerun-if-env-changed=GO60_GIT_DIRTY");
+    println!("cargo:rerun-if-env-changed=MOERGO_CONFIG_GIT_COMMIT");
+    println!("cargo:rerun-if-env-changed=MOERGO_CONFIG_GIT_DIRTY");
     println!("cargo:rerun-if-env-changed=GO60_CONFIG_GIT_COMMIT");
     println!("cargo:rerun-if-env-changed=GO60_CONFIG_GIT_DIRTY");
+    println!("cargo:rerun-if-env-changed=MOERGO_RMK_GIT_VERSION");
     println!("cargo:rerun-if-env-changed=GO60_RMK_GIT_VERSION");
     println!("cargo:rerun-if-changed=../../.git/HEAD");
 
@@ -53,32 +56,37 @@ fn version_embedding() {
         }
     };
 
-    // The shared MoErgo lighting modules still use these compatibility names.
-    println!("cargo:rustc-env=GLOVE80_GIT_HASH={hash}");
-    println!("cargo:rustc-env=GLOVE80_GIT_DIRTY={}", dirty as u8);
+    println!("cargo:rustc-env=MOERGO_REPO_GIT_HASH={hash}");
+    println!("cargo:rustc-env=MOERGO_REPO_GIT_DIRTY={}", dirty as u8);
 
-    let config_commit = env::var("GO60_CONFIG_GIT_COMMIT").unwrap_or_default();
+    let config_commit = env::var("MOERGO_CONFIG_GIT_COMMIT")
+        .or_else(|_| env::var("GO60_CONFIG_GIT_COMMIT"))
+        .unwrap_or_default();
     let config_hash = if config_commit.is_empty() {
         "standalone".to_owned()
     } else {
         assert!(
             config_commit.len() >= 8 && config_commit.bytes().all(|byte| byte.is_ascii_hexdigit()),
-            "GO60_CONFIG_GIT_COMMIT must contain at least eight hexadecimal characters"
+            "MOERGO_CONFIG_GIT_COMMIT must contain at least eight hexadecimal characters"
         );
         config_commit[..8].to_ascii_lowercase()
     };
-    let config_dirty = match env::var("GO60_CONFIG_GIT_DIRTY").as_deref() {
+    let config_dirty = match env::var("MOERGO_CONFIG_GIT_DIRTY")
+        .or_else(|_| env::var("GO60_CONFIG_GIT_DIRTY"))
+        .as_deref()
+    {
         Ok("1" | "true") => true,
         Ok("0" | "false") | Err(_) => false,
-        Ok(value) => panic!("GO60_CONFIG_GIT_DIRTY must be true/false or 1/0, got {value}"),
+        Ok(value) => panic!("MOERGO_CONFIG_GIT_DIRTY must be true/false or 1/0, got {value}"),
     };
-    println!("cargo:rustc-env=GLOVE80_CONFIG_GIT_HASH={config_hash}");
+    println!("cargo:rustc-env=MOERGO_CONFIG_GIT_HASH={config_hash}");
     println!(
-        "cargo:rustc-env=GLOVE80_CONFIG_GIT_DIRTY={}",
+        "cargo:rustc-env=MOERGO_CONFIG_GIT_DIRTY={}",
         config_dirty as u8
     );
 
-    let rmk_version = env::var("GO60_RMK_GIT_VERSION")
+    let rmk_version = env::var("MOERGO_RMK_GIT_VERSION")
+        .or_else(|_| env::var("GO60_RMK_GIT_VERSION"))
         .ok()
         .filter(|value| !value.is_empty())
         .or_else(|| {
@@ -94,9 +102,9 @@ fn version_embedding() {
         .unwrap_or_else(|| "unknown".to_owned());
     assert!(
         rmk_version.len() <= 48 && rmk_version.bytes().all(|byte| byte.is_ascii_graphic()),
-        "GO60_RMK_GIT_VERSION must be 1-48 printable ASCII characters"
+        "MOERGO_RMK_GIT_VERSION must be 1-48 printable ASCII characters"
     );
-    println!("cargo:rustc-env=GLOVE80_RMK_GIT_VERSION={rmk_version}");
+    println!("cargo:rustc-env=MOERGO_RMK_GIT_VERSION={rmk_version}");
 
     // Avoid a stale dirty bit after incremental builds in a worktree.
     println!("cargo:rerun-if-changed=../../.git");

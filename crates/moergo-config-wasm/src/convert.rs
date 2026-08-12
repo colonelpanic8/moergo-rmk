@@ -1,12 +1,12 @@
-//! Translation between the wire-shaped [`crate::types`] and `glove80-config`'s
+//! Translation between the wire-shaped [`crate::types`] and `moergo-config`'s
 //! internal [`model::Snapshot`].
 //!
 //! Nothing here decides anything about the file format; every rule — validation,
 //! colour canonicalization, name-to-index resolution, parameter bounds — comes
-//! out of `glove80-config`, which is the same code the CLI runs. This module
+//! out of `moergo-config`, which is the same code the CLI runs. This module
 //! only rearranges values.
 
-use glove80_config as model;
+use moergo_config as model;
 use rynk::rmk_types::morse::MorseProfileName;
 use rynk::rmk_types::protocol::rynk::{LightingExtensionState, MorseProfileEntry};
 

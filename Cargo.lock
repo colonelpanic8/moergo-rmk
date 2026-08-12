@@ -752,50 +752,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "glove80-config"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "heapless",
- "rynk",
- "serde",
- "serde_json",
- "toml 0.9.12+spec-1.1.0",
-]
-
-[[package]]
-name = "glove80-config-wasm"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "console_error_panic_hook",
- "glove80-config",
- "rynk",
- "serde",
- "tsify",
- "wasm-bindgen",
-]
-
-[[package]]
-name = "glove80-control"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "clap",
- "embassy-futures",
- "glove80-config",
- "heapless",
- "libc",
- "rynk",
- "rynk-ble",
- "rynk-kle",
- "serde",
- "serde_json",
- "tokio",
- "toml 0.9.12+spec-1.1.0",
-]
-
-[[package]]
 name = "hash32"
 version = "0.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1010,6 +966,50 @@ dependencies = [
  "libc",
  "wasi",
  "windows-sys",
+]
+
+[[package]]
+name = "moergo-config"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "heapless",
+ "rynk",
+ "serde",
+ "serde_json",
+ "toml 0.9.12+spec-1.1.0",
+]
+
+[[package]]
+name = "moergo-config-wasm"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "console_error_panic_hook",
+ "moergo-config",
+ "rynk",
+ "serde",
+ "tsify",
+ "wasm-bindgen",
+]
+
+[[package]]
+name = "moergo-control"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "embassy-futures",
+ "heapless",
+ "libc",
+ "moergo-config",
+ "rynk",
+ "rynk-ble",
+ "rynk-kle",
+ "serde",
+ "serde_json",
+ "tokio",
+ "toml 0.9.12+spec-1.1.0",
 ]
 
 [[package]]

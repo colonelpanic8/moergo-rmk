@@ -1,22 +1,27 @@
-# glove80-rmk
+# moergo-rmk
 
-Glove80 firmware and native control tooling built on
+Shared Glove80 and Go60 firmware plus native control tooling built on
 [RMK](https://github.com/HaoboGu/rmk).
+
+The repository and shared firmware layer are named `moergo-rmk`; board-specific
+crates and artifacts retain their Glove80 and Go60 names.
 
 ## Layout
 
 ```text
 crates/
-├── glove80-rmk/      # embedded firmware for both keyboard halves
-├── go60-rmk/         # experimental Go60 firmware for both halves
-├── glove80-control/  # native Rynk CLI
+├── moergo-rmk/       # shared embedded services and parity contract
+├── glove80-rmk/      # Glove80 hardware entry points
+├── go60-rmk/         # Go60 hardware entry points
+├── moergo-control/   # multi-board native Rynk CLI
 └── xtask/            # repository checks and release packaging
 dependencies/
 └── rmk/              # pinned upstream RMK/Rynk submodule
 ```
 
-The firmware is a standalone Cargo workspace because it cross-compiles for the
-nRF52840. The two native packages share the root workspace. Generated release
+Each board firmware is a standalone Cargo workspace because it cross-compiles
+for the nRF52840. Both depend on `moergo-rmk`; neither board may include source
+from the other. Native packages share the root workspace. Generated release
 artifacts go in `dist/`.
 
 ## Setup
@@ -34,22 +39,38 @@ bindgen support, and native BLE build dependencies.
 Run `just` inside the development shell to list the supported tasks:
 
 ```bash
-just fmt       # format both Cargo workspaces
+just fmt       # format every owned Cargo workspace
 just check     # validate repository paths and run native checks/tests
 just host-test # test the CLI and repository task runner
+just board-check  # compile both halves of both boards
+just parity-check # host checks plus both-board compilation
 just firmware  # build and package both keyboard halves
 just dist      # alias of firmware
-just go60-firmware # build and package the experimental Go60 images
+just go60-firmware # build and package the Go60 images
+just firmware-all  # build both release bundles
 ```
 
-Run the CLI directly with `cargo run -p glove80-control -- --help`. See
-[`crates/glove80-control/README.md`](crates/glove80-control/README.md) for its
+Run the CLI directly with `cargo run -p moergo-control -- --help`. It discovers
+and manages either board through Rynk. See
+[`crates/moergo-control/README.md`](crates/moergo-control/README.md) for its
 commands and [`crates/glove80-rmk/README.md`](crates/glove80-rmk/README.md) for
 firmware details.
 
 Boards may register typed, namespaced device data through Rynk. The Go60 uses
 this for its automatic split policy, active wired/BLE transport, and cable
-detect state; query it with `glove80-control device-data` for JSON output.
+detect state; query it with `moergo-control device-data` for JSON output.
+
+## Board parity
+
+Shared behavior belongs in `crates/moergo-rmk`. A board crate should contain
+only hardware entry points, pins/drivers, board-specific device data, and
+features that physically do not exist on its sibling. Any intentional
+capability difference must be documented; an implementation difference is not
+an acceptable reason to duplicate a service.
+
+Every change to shared behavior is checked against both boards. Release
+qualification likewise builds both UF2 bundles, even when the initiating bug
+was observed on only one model.
 
 ## Release artifacts
 
@@ -59,11 +80,10 @@ manifest under `dist/`. Packaging validates each half's UF2 family ID and the
 application flash range `0x00026000..0x000dc000`.
 
 `just go60-firmware` applies the same validation to the Go60 build and writes
-its independent bundle under `dist/go60/`. Go60 downstream configurations may
-set `GO60_CONFIG_GIT_COMMIT` and `GO60_CONFIG_GIT_DIRTY` for provenance.
+its independent bundle under `dist/go60/`.
 
-Downstream configuration repositories may set `GLOVE80_CONFIG_GIT_COMMIT` and
-`GLOVE80_CONFIG_GIT_DIRTY` to include their source identity in firmware build
+Downstream configuration repositories may set `MOERGO_CONFIG_GIT_COMMIT` and
+`MOERGO_CONFIG_GIT_DIRTY` to include their source identity in firmware build
 labels and release manifests.
 
 A successful build is not hardware qualification. Before release, test both

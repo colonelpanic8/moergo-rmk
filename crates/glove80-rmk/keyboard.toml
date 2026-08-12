@@ -97,10 +97,10 @@ layers = 16
 #   - &magic hold-tap        -> MO(2) plus board-local lighting wake/status
 #   - lower left thumb arc   -> User0..User2 (select the slot AND prefer
 #     BLE output, so a slot key both picks and routes to that connection;
-#     slot 3 exists but is only reachable via `glove80-control connection`)
+#     slot 3 exists but is only reachable via `moergo-control connection`)
 #   - upper thumb (Esc pos)  -> OutputUsb (prefer USB output)
 #   - no clearing action is bound to a key; bond management goes through
-#     `glove80-control connection clear <slot>`
+#     `moergo-control connection clear <slot>`
 #   - left &bootloader       -> Bootloader
 #   - right &bootloader      -> User12 (forwarded to the peripheral)
 #   - &sys_reset             -> Reboot

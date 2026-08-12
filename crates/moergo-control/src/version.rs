@@ -6,16 +6,16 @@ use rynk::rmk_types::protocol::rynk::{BuildInfo, DeviceInfo, ProtocolVersion};
 
 use crate::transport::Selector;
 
-const CLI_GIT_HASH: &str = env!("GLOVE80_GIT_HASH");
+const CLI_GIT_HASH: &str = env!("MOERGO_REPO_GIT_HASH");
 const CLI_GIT_DIRTY: bool = {
-    let s = env!("GLOVE80_GIT_DIRTY").as_bytes();
+    let s = env!("MOERGO_REPO_GIT_DIRTY").as_bytes();
     s.len() == 1 && s[0] == b'1'
 };
 
 pub(crate) fn render(protocol: ProtocolVersion, device: &DeviceInfo, build: &BuildInfo) -> String {
     let cli_dirty = if CLI_GIT_DIRTY { "-dirty" } else { "" };
     format!(
-        "glove80-control v{} ({CLI_GIT_HASH}{cli_dirty})\n\
+        "moergo-control v{} ({CLI_GIT_HASH}{cli_dirty})\n\
          Rynk protocol: v{}.{}\n\
          firmware: {}\n\
          RMK: v{}.{}.{}\n\

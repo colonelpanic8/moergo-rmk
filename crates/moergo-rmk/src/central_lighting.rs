@@ -213,6 +213,15 @@ fn record_status(
 pub static REMOTE_BOOT_REQUESTS: embassy_sync::channel::Channel<rmk::RawMutex, (), 1> =
     embassy_sync::channel::Channel::new();
 
+pub fn route_peripheral_bootloader(slot: u8) -> Result<(), rmk::types::protocol::rynk::RynkError> {
+    if slot != 0 {
+        return Err(rmk::types::protocol::rynk::RynkError::Invalid);
+    }
+    REMOTE_BOOT_REQUESTS
+        .try_send(())
+        .map_err(|_| rmk::types::protocol::rynk::RynkError::NotReady)
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn init<'keymap, 'data>(
     keymap: &'keymap KeyMap<'data>,

@@ -1,4 +1,4 @@
-# glove80-control
+# moergo-control
 
 Native Glove80 control CLI using RMK's Rynk protocol over USB HID or BLE. It
 controls current firmware only; the retired Glove80 product protocol
@@ -7,8 +7,8 @@ is intentionally not supported.
 Run from the repository's Nix development shell:
 
 ```bash
-cargo run -p glove80-control -- --help
-cargo run -p glove80-control -- --usb version
+cargo run -p moergo-control -- --help
+cargo run -p moergo-control -- --usb version
 ```
 
 The top-level commands are:
@@ -44,15 +44,15 @@ and survive a reboot. For example, this makes LED 29 blue whenever layer 1 is
 active and composes it with the other active layers:
 
 ```bash
-cargo run -p glove80-control -- lighting scene-set 1 29 blue
-cargo run -p glove80-control -- lighting scene-policy active-stack
-cargo run -p glove80-control -- lighting scene-read
+cargo run -p moergo-control -- lighting scene-set 1 29 blue
+cargo run -p moergo-control -- lighting scene-policy active-stack
+cargo run -p moergo-control -- lighting scene-read
 ```
 
 The maintenance lock covers all remote mutations, matrix monitoring, storage
 reset, and bootloader entry. Hold Magic and tap R to toggle it: R glows green
 while the lock is off and unattended automation is allowed, and red while the
-lock is engaged. Use `glove80-control maintenance` to read both the live and
+lock is engaged. Use `moergo-control maintenance` to read both the live and
 compiled-default state.
 
 The `config` commands provide a bidirectional TOML snapshot of managed runtime

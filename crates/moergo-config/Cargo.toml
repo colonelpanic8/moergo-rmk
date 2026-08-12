@@ -1,5 +1,5 @@
 [package]
-name = "glove80-config"
+name = "moergo-config"
 version = "0.1.0"
 edition = "2021"
 description = "Pure host-side model of managed Rynk runtime state, shared by the CLI and the browser configurator"

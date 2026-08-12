@@ -10,6 +10,7 @@ description = "RMK firmware for the MoErgo Glove80"
 [workspace]
 
 [dependencies]
+moergo-rmk = { path = "../moergo-rmk", features = ["glove80"] }
 # RMK, pinned by the dependencies/rmk submodule to the Glove80 integration fork
 # branch. The branch carries the generic extension APIs this firmware uses.
 rmk = { path = "../../dependencies/rmk/rmk", default-features = false, features = [

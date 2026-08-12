@@ -7,11 +7,11 @@
 //! A browser configurator holds live device state as `rynk` protocol types; a
 //! source file speaks in effect names, keycode mnemonics and colour strings.
 //! This package is the bridge, and it is deliberately thin: every rule about
-//! the file format lives in `glove80-config`, which is exactly the code the
-//! `glove80-control` CLI runs, so the two hosts cannot disagree about what a
+//! the file format lives in `moergo-config`, which is exactly the code the
+//! `moergo-control` CLI runs, so the two hosts cannot disagree about what a
 //! file means.
 //!
-//! The format is Glove80-specific, not generic Rynk. `glove80-config` hardcodes
+//! The format is MoErgo-specific, not generic Rynk. `moergo-config` carries
 //! the 6x14 matrix and the four physical holes at r0c5, r0c8, r5c5 and r5c8; a
 //! different Rynk board needs a different schema, not a different catalog.
 //!
@@ -22,7 +22,7 @@
 mod convert;
 mod types;
 
-use glove80_config::{
+use moergo_config::{
     differences, runtime_config_from_moergo_json, snapshot_to_moergo_json, RuntimeConfig,
 };
 use wasm_bindgen::prelude::*;
@@ -79,12 +79,12 @@ fn parse_text_reporting(
     match format {
         ConfigFormat::Toml => Ok((RuntimeConfig::from_toml(text)?, Vec::new())),
         ConfigFormat::MoergoJson => {
-            let imported = glove80_config::import_moergo_layout(text)?;
+            let imported = moergo_config::import_moergo_layout(text)?;
             let notes = imported
                 .diagnostics
                 .iter()
                 .map(|diagnostic| ImportNote {
-                    approximated: diagnostic.severity == glove80_config::Severity::Approximated,
+                    approximated: diagnostic.severity == moergo_config::Severity::Approximated,
                     location: diagnostic.location.clone(),
                     message: diagnostic.message.clone(),
                 })

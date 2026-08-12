@@ -75,9 +75,9 @@ fn check(root: &Path) -> Result<()> {
         &[],
     )?;
     run_command(root, "cargo", &["test", "--workspace"], &[])?;
-    // `glove80-config-wasm` is wasm32-gated, so the host check above compiles an
+    // `moergo-config-wasm` is wasm32-gated, so the host check above compiles an
     // empty library and would pass with the crate thoroughly broken. Anything
-    // added to a shared type in `glove80-config` has to reach the browser too;
+    // added to a shared type in `moergo-config` has to reach the browser too;
     // this is the only check that notices when it did not.
     run_command(
         root,
@@ -85,7 +85,7 @@ fn check(root: &Path) -> Result<()> {
         &[
             "check",
             "-p",
-            "glove80-config-wasm",
+            "moergo-config-wasm",
             "--target",
             "wasm32-unknown-unknown",
         ],
@@ -197,12 +197,13 @@ fn normalize(path: &Path) -> PathBuf {
 }
 
 fn dist(root: &Path) -> Result<()> {
-    let allow_dirty = env::var("GLOVE80_ALLOW_DIRTY").as_deref() == Ok("1");
+    let allow_dirty = env::var("MOERGO_ALLOW_DIRTY").as_deref() == Ok("1")
+        || env::var("GLOVE80_ALLOW_DIRTY").as_deref() == Ok("1");
     let rmk_commit = validate_submodule(root, allow_dirty)?;
     let dirty = !git(root, &["status", "--porcelain", "--untracked-files=normal"])?.is_empty();
     if dirty && !allow_dirty {
         return Err(
-            "release bundles require a clean repository (set GLOVE80_ALLOW_DIRTY=1 only for local validation)"
+            "release bundles require a clean repository (set MOERGO_ALLOW_DIRTY=1 only for local validation)"
                 .into(),
         );
     }
@@ -224,9 +225,12 @@ fn dist(root: &Path) -> Result<()> {
             "--dirty",
         ],
     )?;
-    let config_commit =
-        env::var("GLOVE80_CONFIG_GIT_COMMIT").unwrap_or_else(|_| "standalone".to_owned());
-    let config_dirty = env::var("GLOVE80_CONFIG_GIT_DIRTY").unwrap_or_else(|_| "false".to_owned());
+    let config_commit = env::var("MOERGO_CONFIG_GIT_COMMIT")
+        .or_else(|_| env::var("GLOVE80_CONFIG_GIT_COMMIT"))
+        .unwrap_or_else(|_| "standalone".to_owned());
+    let config_dirty = env::var("MOERGO_CONFIG_GIT_DIRTY")
+        .or_else(|_| env::var("GLOVE80_CONFIG_GIT_DIRTY"))
+        .unwrap_or_else(|_| "false".to_owned());
 
     let firmware_dir = root.join("crates/glove80-rmk");
     for binary in ["glove80_lh", "glove80_rh"] {
@@ -234,7 +238,7 @@ fn dist(root: &Path) -> Result<()> {
             &firmware_dir,
             "cargo",
             &["build", "--release", "--bin", binary],
-            &[("GLOVE80_RMK_GIT_VERSION", &rmk_version)],
+            &[("MOERGO_RMK_GIT_VERSION", &rmk_version)],
         )?;
     }
 
@@ -272,12 +276,13 @@ fn dist(root: &Path) -> Result<()> {
 }
 
 fn dist_go60(root: &Path) -> Result<()> {
-    let allow_dirty = env::var("GO60_ALLOW_DIRTY").as_deref() == Ok("1");
+    let allow_dirty = env::var("MOERGO_ALLOW_DIRTY").as_deref() == Ok("1")
+        || env::var("GO60_ALLOW_DIRTY").as_deref() == Ok("1");
     let rmk_commit = validate_submodule(root, allow_dirty)?;
     let dirty = !git(root, &["status", "--porcelain", "--untracked-files=normal"])?.is_empty();
     if dirty && !allow_dirty {
         return Err(
-            "Go60 release bundles require a clean repository (set GO60_ALLOW_DIRTY=1 only for local validation)"
+            "Go60 release bundles require a clean repository (set MOERGO_ALLOW_DIRTY=1 only for local validation)"
                 .into(),
         );
     }
@@ -299,9 +304,12 @@ fn dist_go60(root: &Path) -> Result<()> {
             "--dirty",
         ],
     )?;
-    let config_commit =
-        env::var("GO60_CONFIG_GIT_COMMIT").unwrap_or_else(|_| "standalone".to_owned());
-    let config_dirty = env::var("GO60_CONFIG_GIT_DIRTY").unwrap_or_else(|_| "false".to_owned());
+    let config_commit = env::var("MOERGO_CONFIG_GIT_COMMIT")
+        .or_else(|_| env::var("GO60_CONFIG_GIT_COMMIT"))
+        .unwrap_or_else(|_| "standalone".to_owned());
+    let config_dirty = env::var("MOERGO_CONFIG_GIT_DIRTY")
+        .or_else(|_| env::var("GO60_CONFIG_GIT_DIRTY"))
+        .unwrap_or_else(|_| "false".to_owned());
     let source_dirty = if dirty { "true" } else { "false" };
 
     let firmware_dir = root.join("crates/go60-rmk");
@@ -313,7 +321,7 @@ fn dist_go60(root: &Path) -> Result<()> {
             &[
                 ("GO60_GIT_COMMIT", &source_commit),
                 ("GO60_GIT_DIRTY", source_dirty),
-                ("GO60_RMK_GIT_VERSION", &rmk_version),
+                ("MOERGO_RMK_GIT_VERSION", &rmk_version),
             ],
         )?;
     }

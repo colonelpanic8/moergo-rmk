@@ -1,19 +1,28 @@
-# Glove80 RMK development notes
+# MoErgo RMK development notes
 
-## Experimental Go60 sibling
+## Glove80 and Go60 parity
 
-`crates/go60-rmk` is a sibling embedded workspace that reuses the Glove80
-lighting/replication modules with board constants for 30 LEDs per half and a
-40% hardware-output ceiling. Its hardware configuration is transcribed from
-MoErgo's official `moergo-sc/zmk` Go60 board definitions.
+`crates/glove80-rmk` and `crates/go60-rmk` are equally thin board workspaces.
+Shared embedded behavior belongs in `crates/moergo-rmk`; a board crate must not
+include or reach into its sibling's source tree. Keep their RMK feature sets
+aligned, and run `just parity-check` for changes to shared services.
+
+Board-local code is limited to physical wiring, pins/drivers, device identity,
+and hardware that has no sibling equivalent. Document intentional capability
+differences. Fixes to shared behavior must cover both boards unless the
+hardware itself makes that impossible.
+
+The Go60 hardware configuration is transcribed from MoErgo's official
+`moergo-sc/zmk` board definitions. It uses 30 LEDs per half and a 40% hardware
+output ceiling.
 
 The current port supports BLE split and the two Cirque Pinnacle trackpads
 (RMK's `cirque_pinnacle` driver, carried through the assembly; wiring in
-`crates/go60-rmk/src/trackpad.rs`). Do not claim feature parity or release it
-as a ZMK replacement until the trackpads and peripheral pointing forwarding
-are qualified on hardware and the Go60's automatic BLE/TRRS half-duplex split
-switching is implemented. Build and validate its independent UF2 bundle with
-`just go60-firmware`; the official family IDs are `0x9809B007` (left) and
+`crates/go60-rmk/src/trackpad.rs`) and automatic BLE/TRRS half-duplex split
+switching. Do not release it as a ZMK replacement until the trackpads,
+peripheral pointing forwarding, and automatic split switching are qualified
+on hardware. Build and validate its independent UF2 bundle with `just
+go60-firmware`; the official family IDs are `0x9809B007` (left) and
 `0x980AB007` (right).
 
 ## Embedded startup latency budget

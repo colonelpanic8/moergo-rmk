@@ -33,7 +33,7 @@ mod lighting {
     }
 }
 
-#[path = "../../glove80-rmk/src/split_lighting.rs"]
+#[path = "../../moergo-rmk/src/split_lighting.rs"]
 mod split_lighting;
 
 use lighting::BatteryPair;

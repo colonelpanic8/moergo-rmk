@@ -353,14 +353,14 @@ pub struct HalfOutput {
 }
 
 impl HalfOutput {
-    pub fn left(hardware: LightingHardware) -> Self {
+    pub(crate) fn left(hardware: LightingHardware) -> Self {
         Self {
             hardware,
             first_slot: 0,
         }
     }
 
-    pub fn right(hardware: LightingHardware) -> Self {
+    pub(crate) fn right(hardware: LightingHardware) -> Self {
         Self {
             hardware,
             first_slot: LEDS_PER_HALF,

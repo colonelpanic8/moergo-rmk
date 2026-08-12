@@ -1,5 +1,5 @@
 {
-  description = "Glove80 RMK firmware and host tooling";
+  description = "MoErgo RMK firmware and host tooling";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";

@@ -1,13 +1,13 @@
 //! Embed this build's git identity for the `version` verb, exactly the way
 //! the firmware embeds its own (see `crates/glove80-rmk/build.rs`,
-//! `version_embedding()`): `GLOVE80_GIT_HASH` is `git rev-parse --short=8
+//! `version_embedding()`): `MOERGO_REPO_GIT_HASH` is `git rev-parse --short=8
 //! HEAD` padded with '0' to exactly 8 ASCII chars (`unknown0` without git),
-//! `GLOVE80_GIT_DIRTY` is `1` iff `git status --porcelain` is non-empty.
+//! `MOERGO_REPO_GIT_DIRTY` is `1` iff `git status --porcelain` is non-empty.
 
 use std::process::Command;
 
 fn main() {
-    // Two levels up: <repo root>/.git/HEAD (this crate is crates/glove80-control).
+    // Two levels up: <repo root>/.git/HEAD (this crate is crates/moergo-control).
     println!("cargo:rerun-if-changed=../../.git/HEAD");
     // HEAD only moves on checkout; ordinary commits move the branch ref, so
     // watch that too or the embedded hash goes stale (same fix as the
@@ -42,6 +42,6 @@ fn main() {
             .filter(|out| out.status.success())
             .is_some_and(|out| !out.stdout.is_empty())
     };
-    println!("cargo:rustc-env=GLOVE80_GIT_HASH={hash}");
-    println!("cargo:rustc-env=GLOVE80_GIT_DIRTY={}", dirty as u8);
+    println!("cargo:rustc-env=MOERGO_REPO_GIT_HASH={hash}");
+    println!("cargo:rustc-env=MOERGO_REPO_GIT_DIRTY={}", dirty as u8);
 }

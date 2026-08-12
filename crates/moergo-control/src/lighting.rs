@@ -226,7 +226,7 @@ pub fn replica_verdict(status: &LightingReplicaStatus, freshness_ms: u32) -> Rep
     }
 }
 
-pub use glove80_config::parse_color;
+pub use moergo_config::parse_color;
 
 pub fn parse_key_list(text: &str) -> Result<Vec<u8>> {
     let mut keys = Vec::new();

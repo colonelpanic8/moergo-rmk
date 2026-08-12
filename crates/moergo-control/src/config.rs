@@ -1,5 +1,5 @@
 //! The `config` subcommand: files, device I/O, and reporting around the pure
-//! runtime-state model in [`glove80_config`].
+//! runtime-state model in [`moergo_config`].
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use anyhow::{anyhow, bail, Context, Result};
 use clap::{Subcommand, ValueEnum};
-use glove80_config::{
+use moergo_config::{
     background_from_wire, background_to_wire, conditional_scene_from_wire,
     conditional_scene_to_wire, differences, effects_from_wire, effects_to_wire, live_param_tables,
     output_mode_from_wire, output_mode_to_wire, params_to_writes, runtime_config_from_moergo_json,
@@ -29,7 +29,7 @@ use rynk::{Client, RynkHostError};
 
 use crate::transport::Selector;
 
-pub use glove80_config::DiffFound;
+pub use moergo_config::DiffFound;
 
 const CONDITIONAL_READ_ATTEMPTS: usize = 3;
 const CONDITIONAL_READ_TIMEOUT: Duration = Duration::from_secs(10);
@@ -535,7 +535,7 @@ async fn read_behaviors(client: &Client) -> Result<BehaviorSnapshot> {
             state
                 .positions
                 .into_iter()
-                .map(|position| glove80_config::HoldTriggerPosition {
+                .map(|position| moergo_config::HoldTriggerPosition {
                     profile: position.profile,
                     row: position.row,
                     col: position.col,
@@ -547,7 +547,7 @@ async fn read_behaviors(client: &Client) -> Result<BehaviorSnapshot> {
             state
                 .entries
                 .into_iter()
-                .map(|entry| glove80_config::MorseProfileEntry {
+                .map(|entry| moergo_config::MorseProfileEntry {
                     index: entry.index,
                     name: entry.name.as_str().to_owned(),
                     profile: entry.profile,
@@ -575,7 +575,7 @@ async fn read_behaviors(client: &Client) -> Result<BehaviorSnapshot> {
                 profiles
                     .into_iter()
                     .enumerate()
-                    .map(|(index, profile)| glove80_config::MorseProfileEntry {
+                    .map(|(index, profile)| moergo_config::MorseProfileEntry {
                         index: index as u8,
                         name: format!("profile_{index:03}"),
                         profile,
@@ -677,7 +677,7 @@ async fn read_macro_space(client: &Client) -> Result<Vec<u8>> {
 ///
 /// This is the whole of `--exact`: the merge semantics live in the `Option`s, and
 /// filling them in is what turns "leave this alone" into "there is nothing here".
-fn claim_every_behavior_table(snapshot: &mut glove80_config::Snapshot) {
+fn claim_every_behavior_table(snapshot: &mut moergo_config::Snapshot) {
     let behaviors = &mut snapshot.behaviors;
     behaviors.morses.get_or_insert_with(Vec::new);
     behaviors.morse_profiles.get_or_insert_with(Vec::new);

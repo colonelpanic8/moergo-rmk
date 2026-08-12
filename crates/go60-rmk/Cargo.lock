@@ -1156,6 +1156,7 @@ dependencies = [
  "embassy-sync",
  "embassy-time",
  "heapless 0.8.0",
+ "moergo-rmk",
  "nrf-mpsl",
  "nrf-sdc",
  "panic-probe",
@@ -1446,6 +1447,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b63fbc4a50860e98e7b2aa7804ded1db5cbc3aff9193adaff57a6931bf7c4b4c"
 dependencies = [
  "adler2",
+]
+
+[[package]]
+name = "moergo-rmk"
+version = "0.1.0"
+dependencies = [
+ "defmt 1.1.1",
+ "embassy-futures",
+ "embassy-nrf",
+ "embassy-sync",
+ "embassy-time",
+ "rmk",
+ "rmk-palettefx",
 ]
 
 [[package]]

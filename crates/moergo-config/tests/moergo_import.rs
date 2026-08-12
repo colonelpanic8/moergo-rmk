@@ -7,7 +7,7 @@
 //! layout's hand tags, so the import is expected to recover the intent and drop
 //! the scaffolding rather than transliterate it.
 
-use glove80_config::{
+use moergo_config::{
     import_moergo_layout, runtime_config_from_moergo_json, RuntimeConfig, Severity,
 };
 use serde_json::json;
@@ -41,7 +41,7 @@ fn combo_export(extra_triggers: bool) -> String {
     .to_string()
 }
 
-fn combo_ambiguity_diagnostics(imported: &glove80_config::ImportedLayout) -> Vec<&str> {
+fn combo_ambiguity_diagnostics(imported: &moergo_config::ImportedLayout) -> Vec<&str> {
     imported
         .diagnostics
         .iter()
@@ -447,7 +447,7 @@ fn display_brightness_keys_resolve() {
         "KC_BRIGHTNESS_MAXIMUM",
         "KC_BRIGHTNESS_AUTO",
     ] {
-        glove80_config::keycodes::parse_keycode(name)
+        moergo_config::keycodes::parse_keycode(name)
             .unwrap_or_else(|error| panic!("{name} should resolve: {error:#}"));
     }
 }

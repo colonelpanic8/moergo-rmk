@@ -1,9 +1,9 @@
 [package]
-name = "glove80-config-wasm"
+name = "moergo-config-wasm"
 version = "0.1.0"
 edition = "2021"
 publish = false
-description = "The glove80.toml round-trip compiled to a wasm package, in the same protocol types a browser host already holds"
+description = "The MoErgo runtime configuration model compiled to WebAssembly"
 license = "MIT"
 
 # Built by `wasm-pack build --target web`. Native checks compile an empty crate
@@ -13,7 +13,7 @@ crate-type = ["cdylib"]
 
 [dependencies]
 anyhow = "1.0"
-glove80-config = { path = "../glove80-config" }
+moergo-config = { path = "../moergo-config" }
 # `wasm` turns on the tsify derives that give the protocol types their own
 # names in the generated `.d.ts`, so this package's snapshot type is the same
 # shape a rynk-wasm consumer already holds.

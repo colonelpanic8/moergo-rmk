@@ -1,34 +1,11 @@
 #![no_main]
 #![no_std]
 
-pub const BOARD_LEDS_PER_HALF: usize = 30;
-// MoErgo warns that Go60 RGB above 40% can exceed 500 mA.
-pub const BOARD_CHANNEL_CEILING: u8 = 102;
-// R on the Go60 matrix is LED 8; the Glove80's corresponding LED is 12.
-pub const BOARD_MAINTENANCE_LED: u16 = 8;
-
-#[path = "../../glove80-rmk/src/central_lighting.rs"]
-mod central_lighting;
 mod device_data;
-#[allow(dead_code)]
-#[path = "../../glove80-rmk/src/lighting.rs"]
-mod lighting;
-#[path = "../../glove80-rmk/src/remote_boot.rs"]
-mod remote_boot;
-#[path = "../../glove80-rmk/src/split_lighting.rs"]
-mod split_lighting;
 mod trackpad;
 
+use moergo_rmk::{central_lighting, lighting, remote_boot};
 use rmk::macros::rmk_central;
-
-fn route_peripheral_bootloader(slot: u8) -> Result<(), rmk::types::protocol::rynk::RynkError> {
-    if slot != 0 {
-        return Err(rmk::types::protocol::rynk::RynkError::Invalid);
-    }
-    crate::central_lighting::REMOTE_BOOT_REQUESTS
-        .try_send(())
-        .map_err(|_| rmk::types::protocol::rynk::RynkError::NotReady)
-}
 
 #[rmk_central]
 mod keyboard_central {
@@ -36,12 +13,12 @@ mod keyboard_central {
     fn host_service() {
         use core::fmt::Write as _;
 
-        let dirty = if env!("GLOVE80_GIT_DIRTY") == "1" {
+        let dirty = if env!("MOERGO_REPO_GIT_DIRTY") == "1" {
             "-dirty"
         } else {
             ""
         };
-        let config_dirty = if env!("GLOVE80_CONFIG_GIT_DIRTY") == "1" {
+        let config_dirty = if env!("MOERGO_CONFIG_GIT_DIRTY") == "1" {
             "-dirty"
         } else {
             ""
@@ -50,18 +27,18 @@ mod keyboard_central {
         let _ = write!(
             build_label,
             "config {}{} / {} v{} ({}{}) / RMK {}",
-            env!("GLOVE80_CONFIG_GIT_HASH"),
+            env!("MOERGO_CONFIG_GIT_HASH"),
             config_dirty,
             env!("CARGO_PKG_NAME"),
             env!("CARGO_PKG_VERSION"),
-            env!("GLOVE80_GIT_HASH"),
+            env!("MOERGO_REPO_GIT_HASH"),
             dirty,
-            env!("GLOVE80_RMK_GIT_VERSION"),
+            env!("MOERGO_RMK_GIT_VERSION"),
         );
 
         ::rmk::host::HostService::new(&keymap, &rmk_config)
             .with_lighting(crate::central_lighting::rynk_controller())
-            .with_peripheral_bootloader(crate::route_peripheral_bootloader)
+            .with_peripheral_bootloader(crate::central_lighting::route_peripheral_bootloader)
             .with_device_data(
                 crate::device_data::descriptor(),
                 crate::device_data::record_at,

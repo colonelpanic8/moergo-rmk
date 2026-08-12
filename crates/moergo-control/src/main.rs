@@ -5,7 +5,7 @@ use clap::{Parser, Subcommand};
 
 // The keycode tables and the VIA/`KeyAction` bridge are part of the pure
 // configuration model, so the CLI reaches them through their old module paths.
-use glove80_config::{keycodes, rynk_keycode};
+use moergo_config::{keycodes, rynk_keycode};
 
 mod config;
 mod connection;
@@ -18,7 +18,7 @@ mod transport;
 mod version;
 
 #[derive(Parser)]
-#[command(about = "Control Glove80 keymaps, lighting, firmware, and bootloaders over Rynk")]
+#[command(about = "Control MoErgo keyboard keymaps, lighting, firmware, and bootloaders over Rynk")]
 struct Cli {
     /// Device to use: a /dev/hidraw* path or BLE address.
     #[arg(long, global = true)]
