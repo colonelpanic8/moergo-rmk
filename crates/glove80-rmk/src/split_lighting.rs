@@ -26,6 +26,7 @@ use rmk::types::protocol::rynk::LIGHTING_REPLICA_DIGEST_SCHEMA_V1;
 
 use crate::lighting::{BatteryPair, LEDS_PER_HALF, OVERLAY_CAPACITY, SCENE_CAPACITY, TOTAL_LEDS};
 
+// Version 11 carries the runtime wake-layer mask in a staged snapshot packet.
 // Version 10 widens the conditional-scene extension packet with the effects,
 // bonded-slot, and usb-connected predicates, and adds the bonded-slot bitmap
 // to the context. A stale half would read those gates as absent, and an absent
@@ -38,7 +39,7 @@ use crate::lighting::{BatteryPair, LEDS_PER_HALF, OVERLAY_CAPACITY, SCENE_CAPACI
 // runtime conditional-scene packets. A stale half rejects the mismatched
 // version and simply keeps its previous state until both halves are reflashed
 // together.
-const VERSION: u8 = 10;
+const VERSION: u8 = 11;
 const TAG_BEGIN: u8 = 1;
 const TAG_CONTEXT: u8 = 2;
 const TAG_CELL: u8 = 3;
@@ -66,8 +67,10 @@ const TAG_STATUS_REQUEST: u8 = 16;
 const TAG_STATUS_REPORT: u8 = 17;
 const TAG_FRAME_CHUNK_REQUEST: u8 = 18;
 const TAG_FRAME_CHUNK: u8 = 19;
+const TAG_WAKE_LAYERS: u8 = 20;
 
 const BEGIN_LEN: usize = 26;
+const WAKE_LAYERS_LEN: usize = 15;
 const CONTEXT_LEN: usize = 24;
 /// Selection (5 bytes after the header) plus the parameter block: one
 /// length byte, the effect the values belong to, and the values themselves.
@@ -97,6 +100,7 @@ const _: () = assert!(CONDITIONAL_SCENE_EXT_LEN <= SPLIT_APP_MSG_MAX);
 const _: () = assert!(ATTESTATION_LEN <= SPLIT_APP_MSG_MAX);
 const _: () = assert!(STATUS_REPORT_LEN <= SPLIT_APP_MSG_MAX);
 const _: () = assert!(FRAME_CHUNK_LEN <= SPLIT_APP_MSG_MAX);
+const _: () = assert!(WAKE_LAYERS_LEN <= SPLIT_APP_MSG_MAX);
 
 /// The slowly changing lighting inputs that belong in semantic replication.
 /// Layer activity is intentionally absent: RMK's existing dedicated native
@@ -141,6 +145,11 @@ pub enum Message {
         sample_time_ms: u64,
         mutable: StandardMutableState,
         output_mode: OutputMode,
+    },
+    WakeLayers {
+        generation: u8,
+        revision: u32,
+        wake_layers: u64,
     },
     Context {
         generation: u8,
@@ -460,6 +469,17 @@ impl Message {
                     OutputMode::PoweredOnly => 2,
                 };
                 BEGIN_LEN
+            }
+            Message::WakeLayers {
+                generation,
+                revision,
+                wake_layers,
+            } => {
+                out[1] = TAG_WAKE_LAYERS;
+                out[2] = generation;
+                put_u32(&mut out, 3, revision);
+                put_u64(&mut out, 7, wake_layers);
+                WAKE_LAYERS_LEN
             }
             Message::Context {
                 generation,
@@ -875,6 +895,11 @@ impl Message {
                     },
                 })
             }
+            TAG_WAKE_LAYERS if bytes.len() == WAKE_LAYERS_LEN => Ok(Message::WakeLayers {
+                generation: bytes[2],
+                revision: get_u32(bytes, 3),
+                wake_layers: get_u64(bytes, 7),
+            }),
             TAG_CONTEXT if bytes.len() == CONTEXT_LEN => Ok(Message::Context {
                 generation: bytes[2],
                 revision: get_u32(bytes, 3),
@@ -1568,6 +1593,10 @@ fn walk_snapshot(
         sample_time_ms: snapshot.sample_time_ms,
         mutable: snapshot.mutable,
         output_mode: snapshot.output_mode,
+    }) || !sink(Message::WakeLayers {
+        generation,
+        revision: snapshot.revision,
+        wake_layers: snapshot.wake_layers,
     }) || !sink(Message::Context {
         generation,
         revision: snapshot.revision,
@@ -1701,6 +1730,7 @@ struct Stage {
     expected_overlay_cells: usize,
     expected_scene_cells: usize,
     expected_conditional_scene_cells: Option<usize>,
+    wake_layers_received: bool,
     context_received: bool,
     extension_received: bool,
     extension_overlay_received: bool,
@@ -1743,6 +1773,7 @@ impl SnapshotStage {
                         revision,
                         mutable,
                         output_mode,
+                        wake_layers: 0,
                         overlay: OverlayBatch::new(),
                         scenes,
                         runtime_conditional_scenes: RuntimeConditionalSceneTable::new(),
@@ -1756,11 +1787,26 @@ impl SnapshotStage {
                     expected_overlay_cells: cell_count as usize,
                     expected_scene_cells: scene_count as usize,
                     expected_conditional_scene_cells: None,
+                    wake_layers_received: false,
                     context_received: false,
                     extension_received: false,
                     extension_overlay_received: false,
                     batteries: BatteryPair::UNAVAILABLE,
                 });
+                None
+            }
+            Message::WakeLayers {
+                generation,
+                revision,
+                wake_layers,
+            } => {
+                let stage = self.stage.as_mut()?;
+                if stage.generation != generation || stage.snapshot.revision != revision {
+                    self.stage = None;
+                } else {
+                    stage.snapshot.wake_layers = wake_layers;
+                    stage.wake_layers_received = true;
+                }
                 None
             }
             Message::Context {
@@ -1924,6 +1970,7 @@ impl SnapshotStage {
                 let valid = self.stage.as_ref().is_some_and(|stage| {
                     stage.generation == generation
                         && stage.snapshot.revision == revision
+                        && stage.wake_layers_received
                         && stage.context_received
                         && stage.extension_received
                         && stage.extension_overlay_received

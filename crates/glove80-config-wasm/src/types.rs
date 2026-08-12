@@ -122,6 +122,7 @@ pub struct HoldTriggerPosition {
 pub struct LightingSnapshot {
     pub brightness: u8,
     pub output_mode: LightingOutputMode,
+    pub wake_layers: Vec<u8>,
     pub scene_policy: LightingLayerPolicy,
     pub background: LightingBackgroundState,
     /// None when the file names no extension effect, or the device exposes none.

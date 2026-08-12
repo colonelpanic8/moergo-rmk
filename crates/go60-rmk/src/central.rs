@@ -90,6 +90,7 @@ mod keyboard_central {
             persisted_conditional_scenes.as_slice(),
             storage.read_lighting_extension_state().await,
             storage.read_lighting_extension_overlay().await,
+            storage.read_lighting_wake_layers().await,
             p.SPI3,
             p.P0_27,
             p.P1_11,

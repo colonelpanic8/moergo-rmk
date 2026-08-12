@@ -147,6 +147,7 @@ fn lighting_from_wire(
     Ok(model::LightingSnapshot {
         brightness: lighting.brightness,
         output_mode: model::output_mode_from_wire(lighting.output_mode),
+        wake_layers: lighting.wake_layers.clone(),
         scene_policy: model::scene_policy_from_wire(lighting.scene_policy),
         background: model::background_from_wire(lighting.background),
         effects,
@@ -261,6 +262,7 @@ fn lighting_to_wire(
     Ok(LightingSnapshot {
         brightness: lighting.brightness,
         output_mode: model::output_mode_to_wire(lighting.output_mode),
+        wake_layers: lighting.wake_layers.clone(),
         scene_policy: model::scene_policy_to_wire(lighting.scene_policy),
         background: model::background_to_wire(&lighting.background),
         effects: state,

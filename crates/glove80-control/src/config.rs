@@ -22,7 +22,8 @@ use rynk::rmk_types::protocol::rynk::{
     MorseProfileEntry as WireMorseProfileEntry, RynkError, SetAutoMouseLayerConfigsRequest,
     SetKeymapBulkRequest, SetLightingExtensionLayersRequest, SetLightingExtensionParamRequest,
     SetLightingExtensionStateRequest, SetLightingLayerPolicyRequest, SetLightingOutputModeRequest,
-    SetLightingStateRequest, SetMorseHoldTriggerPositionsRequest, SetMorseProfileEntryRequest,
+    SetLightingStateRequest, SetLightingWakeLayersRequest, SetMorseHoldTriggerPositionsRequest,
+    SetMorseProfileEntryRequest,
 };
 use rynk::{Client, RynkHostError};
 
@@ -110,6 +111,25 @@ fn parse(path: &Path) -> Result<RuntimeConfig> {
         .with_context(|| format!("could not read {}", path.display()))?;
     parse_text(&text, file_format(path, Some(&text)))
         .with_context(|| format!("could not parse {}", path.display()))
+}
+
+async fn resolve_lighting_targets(client: &Client, config: RuntimeConfig) -> Result<RuntimeConfig> {
+    let Some(lighting) = config
+        .lighting
+        .as_ref()
+        .filter(|lighting| lighting.has_semantic_targets())
+    else {
+        return Ok(config);
+    };
+    let topology = client
+        .read_lighting_key_topology()
+        .await
+        .context("could not read semantic key topology")?;
+    let resolved = lighting.resolve_semantic_targets(&topology)?;
+    Ok(RuntimeConfig {
+        lighting: Some(resolved),
+        ..config
+    })
 }
 
 async fn read_extended_runtime_conditionals(
@@ -207,7 +227,8 @@ pub async fn operate(client: &Client, command: &ConfigCommand) -> Result<()> {
             println!("pulled live runtime configuration into {}", file.display());
         }
         ConfigCommand::Diff { file, exact } => {
-            let mut desired = parse(file)?.snapshot()?;
+            let config = resolve_lighting_targets(client, parse(file)?).await?;
+            let mut desired = config.snapshot()?;
             if *exact {
                 claim_every_behavior_table(&mut desired);
             }
@@ -221,7 +242,8 @@ pub async fn operate(client: &Client, command: &ConfigCommand) -> Result<()> {
             dry_run,
             exact,
         } => {
-            let mut desired = parse(file)?.snapshot()?;
+            let config = resolve_lighting_targets(client, parse(file)?).await?;
+            let mut desired = config.snapshot()?;
             if *exact {
                 claim_every_behavior_table(&mut desired);
             }
@@ -295,14 +317,28 @@ async fn read_snapshot(client: &Client) -> Result<Snapshot> {
 
     let lighting_caps = client.get_lighting_capabilities().await?;
     let state = client.get_lighting_state().await?;
-    let output_mode = if lighting_caps
+    let output_mode_state = if lighting_caps
         .features
         .contains(LightingFeatureFlags::OUTPUT_MODE)
     {
-        output_mode_from_wire(client.get_lighting_output_mode().await?.mode)
+        Some(client.get_lighting_output_mode().await?)
     } else {
-        OutputModeConfig::AlwaysOn
+        None
     };
+    let output_mode = output_mode_state
+        .as_ref()
+        .map_or(OutputModeConfig::AlwaysOn, |state| {
+            output_mode_from_wire(state.mode)
+        });
+    let wake_layers = output_mode_state
+        .as_ref()
+        .map(|state| {
+            (0..64)
+                .filter(|layer| state.wake_layers & (1u64 << layer) != 0)
+                .map(|layer| layer as u8)
+                .collect()
+        })
+        .unwrap_or_default();
     let scene_status = client.get_lighting_scene_status().await?;
     let (_, scene_cells) = client.read_all_lighting_scenes().await?;
     // Firmware that predates the runtime conditional table reports nothing
@@ -389,6 +425,7 @@ async fn read_snapshot(client: &Client) -> Result<Snapshot> {
         lighting: Some(LightingSnapshot {
             brightness: state.output_brightness,
             output_mode,
+            wake_layers,
             scene_policy: scene_policy_from_wire(scene_status.policy),
             conditional_scenes,
             background: background_from_wire(state.background),
@@ -1000,6 +1037,19 @@ async fn apply_snapshot(client: &Client, desired: &Snapshot, before: &Snapshot) 
                 .set_lighting_output_mode(SetLightingOutputModeRequest {
                     expected_revision: revision,
                     mode: output_mode_to_wire(wanted.output_mode),
+                })
+                .await?;
+        }
+        if wanted.wake_layers != present.wake_layers {
+            let layers = wanted
+                .wake_layers
+                .iter()
+                .fold(0u64, |mask, layer| mask | (1u64 << layer));
+            let revision = client.get_lighting_state().await?.revision;
+            client
+                .set_lighting_wake_layers(SetLightingWakeLayersRequest {
+                    expected_revision: revision,
+                    layers,
                 })
                 .await?;
         }
