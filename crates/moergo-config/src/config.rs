@@ -631,9 +631,15 @@ pub enum EffectKind {
     Breathe,
 }
 
+/// One readable way to name part of the keyboard.
+///
+/// The vocabulary is not specific to lighting: a target lowers to the emitters
+/// a selector covers, and everything but `key = [row, col]` is a question
+/// about the board rather than about the matrix, so it needs the topology the
+/// keyboard advertises.
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(untagged)]
-pub enum LightingTargetConfig {
+pub enum KeyTargetConfig {
     Led { led: u16 },
     KeyId { key: u16 },
     MatrixKey { key: [u8; 2] },
@@ -641,7 +647,7 @@ pub enum LightingTargetConfig {
     All { all: bool },
 }
 
-impl LightingTargetConfig {
+impl KeyTargetConfig {
     pub const fn led(led: u16) -> Self {
         Self::Led { led }
     }
@@ -672,14 +678,14 @@ impl LightingTargetConfig {
     }
 }
 
-impl std::fmt::Display for LightingTargetConfig {
+impl std::fmt::Display for KeyTargetConfig {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match *self {
             Self::Led { led } => write!(formatter, "LED {led}"),
             Self::KeyId { key } => write!(formatter, "key {key}"),
             Self::MatrixKey { key: [row, col] } => write!(formatter, "key [{row}, {col}]"),
             Self::Zone { zone } => write!(formatter, "zone {zone}"),
-            Self::All { .. } => formatter.write_str("all LEDs"),
+            Self::All { .. } => formatter.write_str("all"),
         }
     }
 }
@@ -688,7 +694,7 @@ impl std::fmt::Display for LightingTargetConfig {
 pub struct SceneConfig {
     pub layer: u8,
     #[serde(flatten)]
-    pub target: LightingTargetConfig,
+    pub target: KeyTargetConfig,
     pub color: String,
     #[serde(default = "solid")]
     pub effect: EffectKind,
@@ -712,7 +718,7 @@ pub struct SceneConfig {
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 pub struct ConditionalSceneConfig {
     #[serde(flatten)]
-    pub target: LightingTargetConfig,
+    pub target: KeyTargetConfig,
     pub color: String,
     #[serde(default = "solid")]
     pub effect: EffectKind,
@@ -2040,23 +2046,23 @@ impl LightingConfig {
     pub fn has_semantic_targets(&self) -> bool {
         self.scenes
             .iter()
-            .any(|cell| !matches!(cell.target, LightingTargetConfig::Led { .. }))
+            .any(|cell| !matches!(cell.target, KeyTargetConfig::Led { .. }))
             || self
                 .conditional_scenes
                 .iter()
-                .any(|cell| !matches!(cell.target, LightingTargetConfig::Led { .. }))
+                .any(|cell| !matches!(cell.target, KeyTargetConfig::Led { .. }))
     }
 
     /// Resolve semantic targets to the device's stable LED IDs. One selector
     /// may expand to any number of emitters; raw LED targets pass through.
     pub fn resolve_semantic_targets(&self, topology: &KeyTopology) -> Result<Self> {
         fn resolve(
-            target: &LightingTargetConfig,
+            target: &KeyTargetConfig,
             topology: &KeyTopology,
-        ) -> Result<Vec<LightingTargetConfig>> {
+        ) -> Result<Vec<KeyTargetConfig>> {
             match *target {
-                LightingTargetConfig::Led { led } => Ok(vec![LightingTargetConfig::led(led)]),
-                LightingTargetConfig::KeyId { key } => {
+                KeyTargetConfig::Led { led } => Ok(vec![KeyTargetConfig::led(led)]),
+                KeyTargetConfig::KeyId { key } => {
                     if !topology
                         .keys
                         .iter()
@@ -2070,10 +2076,10 @@ impl LightingConfig {
                     }
                     Ok(leds
                         .into_iter()
-                        .map(|led| LightingTargetConfig::led(led.0))
+                        .map(|led| KeyTargetConfig::led(led.0))
                         .collect())
                 }
-                LightingTargetConfig::MatrixKey { key: [row, col] } => {
+                KeyTargetConfig::MatrixKey { key: [row, col] } => {
                     let matrix = LightingMatrixPosition { row, col };
                     if !topology
                         .keys
@@ -2088,10 +2094,10 @@ impl LightingConfig {
                     }
                     Ok(leds
                         .into_iter()
-                        .map(|led| LightingTargetConfig::led(led.0))
+                        .map(|led| KeyTargetConfig::led(led.0))
                         .collect())
                 }
-                LightingTargetConfig::Zone { zone } => {
+                KeyTargetConfig::Zone { zone } => {
                     let zone_id = LightingZoneId(zone);
                     if !topology.has_zone(zone_id) {
                         bail!("unknown lighting zone {zone}");
@@ -2102,10 +2108,10 @@ impl LightingConfig {
                     }
                     Ok(leds
                         .into_iter()
-                        .map(|led| LightingTargetConfig::led(led.0))
+                        .map(|led| KeyTargetConfig::led(led.0))
                         .collect())
                 }
-                LightingTargetConfig::All { all } => {
+                KeyTargetConfig::All { all } => {
                     if !all {
                         bail!("the all lighting selector must be true");
                     }
@@ -2115,7 +2121,7 @@ impl LightingConfig {
                     }
                     Ok(leds
                         .into_iter()
-                        .map(|led| LightingTargetConfig::led(led.0))
+                        .map(|led| KeyTargetConfig::led(led.0))
                         .collect())
                 }
             }
@@ -2993,7 +2999,7 @@ pub fn scene_from_wire(cell: LightingSceneCell) -> SceneConfig {
     let (color, effect, period_ms, phase_ms, duty, step_ms) = effect_from_wire(cell.effect);
     SceneConfig {
         layer: cell.layer,
-        target: LightingTargetConfig::led(cell.led_id.0),
+        target: KeyTargetConfig::led(cell.led_id.0),
         color: format!("#{:02x}{:02x}{:02x}", color.r, color.g, color.b),
         effect,
         period_ms,
@@ -3032,7 +3038,7 @@ pub fn conditional_scene_from_wire(
     ConditionalSceneConfig {
         connection,
         effects,
-        target: LightingTargetConfig::led(cell.led_id.0),
+        target: KeyTargetConfig::led(cell.led_id.0),
         color: format!("#{:02x}{:02x}{:02x}", color.r, color.g, color.b),
         effect,
         period_ms,
@@ -3421,7 +3427,7 @@ color = "#ff0000"
 "##,
         )
         .unwrap();
-        assert_eq!(key_target.target, LightingTargetConfig::key(0));
+        assert_eq!(key_target.target, KeyTargetConfig::key(0));
         assert!(toml::to_string(&key_target).unwrap().contains("key = 0"));
 
         let matrix_target: SceneConfig = toml::from_str(
@@ -3431,7 +3437,7 @@ color = "#ff0000"
 "##,
         )
         .unwrap();
-        assert_eq!(matrix_target.target, LightingTargetConfig::matrix_key(0, 0));
+        assert_eq!(matrix_target.target, KeyTargetConfig::matrix_key(0, 0));
         assert!(toml::to_string(&matrix_target)
             .unwrap()
             .contains("key = [0, 0]"));
@@ -3443,7 +3449,7 @@ color = "#ff0000"
 "##,
         )
         .unwrap();
-        assert_eq!(zone_target.target, LightingTargetConfig::zone(2));
+        assert_eq!(zone_target.target, KeyTargetConfig::zone(2));
 
         let all_target: SceneConfig = toml::from_str(
             r##"layer = 2
@@ -3452,7 +3458,7 @@ color = "#ff0000"
 "##,
         )
         .unwrap();
-        assert_eq!(all_target.target, LightingTargetConfig::all());
+        assert_eq!(all_target.target, KeyTargetConfig::all());
 
         let matrix = LightingMatrixPosition { row: 0, col: 0 };
         let other_matrix = LightingMatrixPosition { row: 0, col: 1 };
@@ -3529,17 +3535,17 @@ color = "#0000ff"
                 .map(|scene| scene.target.clone())
                 .collect::<Vec<_>>(),
             vec![
-                LightingTargetConfig::led(34),
-                LightingTargetConfig::led(80),
-                LightingTargetConfig::led(34),
-                LightingTargetConfig::led(80),
-                LightingTargetConfig::led(80),
-                LightingTargetConfig::led(22),
-                LightingTargetConfig::led(99),
-                LightingTargetConfig::led(34),
-                LightingTargetConfig::led(80),
-                LightingTargetConfig::led(22),
-                LightingTargetConfig::led(99),
+                KeyTargetConfig::led(34),
+                KeyTargetConfig::led(80),
+                KeyTargetConfig::led(34),
+                KeyTargetConfig::led(80),
+                KeyTargetConfig::led(80),
+                KeyTargetConfig::led(22),
+                KeyTargetConfig::led(99),
+                KeyTargetConfig::led(34),
+                KeyTargetConfig::led(80),
+                KeyTargetConfig::led(22),
+                KeyTargetConfig::led(99),
             ]
         );
         assert!(resolved
@@ -3552,7 +3558,7 @@ color = "#0000ff"
                 .iter()
                 .map(|scene| scene.target)
                 .collect::<Vec<_>>(),
-            vec![LightingTargetConfig::led(34), LightingTargetConfig::led(80)]
+            vec![KeyTargetConfig::led(34), KeyTargetConfig::led(80)]
         );
         assert!(resolved
             .conditional_scenes
@@ -3560,14 +3566,14 @@ color = "#0000ff"
             .all(|scene| conditional_scene_to_wire(scene).is_ok()));
 
         for (target, expected) in [
-            (LightingTargetConfig::key(99), "unknown logical key id 99"),
+            (KeyTargetConfig::key(99), "unknown logical key id 99"),
             (
-                LightingTargetConfig::matrix_key(9, 9),
+                KeyTargetConfig::matrix_key(9, 9),
                 "unknown matrix key [9, 9]",
             ),
-            (LightingTargetConfig::zone(99), "unknown lighting zone 99"),
+            (KeyTargetConfig::zone(99), "unknown lighting zone 99"),
             (
-                LightingTargetConfig::All { all: false },
+                KeyTargetConfig::All { all: false },
                 "the all lighting selector must be true",
             ),
         ] {
@@ -3975,7 +3981,7 @@ Density = 6
     fn reordered_conditional_rules_are_a_difference() {
         let rule = |led: u16| ConditionalSceneConfig {
             connection: None,
-            target: LightingTargetConfig::led(led),
+            target: KeyTargetConfig::led(led),
             color: "#0040a0".into(),
             effect: EffectKind::Solid,
             period_ms: None,
@@ -4053,7 +4059,7 @@ Density = 6
             let mut snap = lighting_snapshot(None, None);
             snap.conditional_scenes = Some(vec![ConditionalSceneConfig {
                 connection: None,
-                target: LightingTargetConfig::led(75),
+                target: KeyTargetConfig::led(75),
                 color: "#0040a0".into(),
                 effect: EffectKind::Solid,
                 period_ms: None,
@@ -4148,7 +4154,7 @@ Density = 6
     fn conditional_rules_round_trip_through_the_wire_and_reject_bad_batteries() {
         let mut cell = ConditionalSceneConfig {
             connection: None,
-            target: LightingTargetConfig::led(75),
+            target: KeyTargetConfig::led(75),
             color: "#0040a0".into(),
             effect: EffectKind::Solid,
             period_ms: None,
