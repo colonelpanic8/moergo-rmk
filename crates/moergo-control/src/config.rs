@@ -12,8 +12,8 @@ use moergo_config::{
     conditional_scene_to_wire, differences, effects_from_wire, effects_to_wire, live_param_tables,
     output_mode_from_wire, output_mode_to_wire, params_to_writes, runtime_config_from_moergo_json,
     scene_from_wire, scene_policy_from_wire, scene_policy_to_wire, scene_to_wire,
-    snapshot_to_moergo_json, BehaviorSnapshot, EffectParams, EffectsConfig, LightingSnapshot,
-    OutputModeConfig, ParamSpec, RuntimeConfig, Snapshot,
+    snapshot_to_moergo_json, BehaviorSnapshot, EffectParams, EffectsConfig, LightingConfig,
+    LightingSnapshot, OutputModeConfig, ParamSpec, RuntimeConfig, Snapshot,
 };
 use rynk::rmk_types::morse::MorseProfileName;
 use rynk::rmk_types::protocol::rynk::{
@@ -113,23 +113,27 @@ fn parse(path: &Path) -> Result<RuntimeConfig> {
         .with_context(|| format!("could not parse {}", path.display()))
 }
 
-async fn resolve_lighting_targets(client: &Client, config: RuntimeConfig) -> Result<RuntimeConfig> {
-    let Some(lighting) = config
+/// The state a file asks for, with every readable selector in it lowered
+/// through the topology the connected keyboard advertises.
+async fn desired_snapshot(client: &Client, config: RuntimeConfig) -> Result<Snapshot> {
+    let semantic_lighting = config
         .lighting
         .as_ref()
-        .filter(|lighting| lighting.has_semantic_targets())
-    else {
-        return Ok(config);
-    };
+        .is_some_and(LightingConfig::has_semantic_targets);
+    if !semantic_lighting && config.deferred_binds().is_empty() {
+        return config.snapshot();
+    }
     let topology = client
         .read_lighting_key_topology()
         .await
         .context("could not read semantic key topology")?;
-    let resolved = lighting.resolve_semantic_targets(&topology)?;
-    Ok(RuntimeConfig {
-        lighting: Some(resolved),
-        ..config
-    })
+    let mut config = config;
+    if semantic_lighting {
+        if let Some(lighting) = config.lighting.take() {
+            config.lighting = Some(lighting.resolve_semantic_targets(&topology)?);
+        }
+    }
+    config.snapshot_with_topology(&topology)
 }
 
 async fn read_extended_runtime_conditionals(
@@ -194,8 +198,13 @@ fn render(
 
 pub fn run(selector: &Selector, command: &ConfigCommand) -> Result<()> {
     if let ConfigCommand::Validate { file } = command {
-        parse(file)?;
+        let config = parse(file)?;
         println!("{} is valid", file.display());
+        // Saying so matters: an offline check cannot tell whether these cover
+        // the keys the author meant, only that they are well formed.
+        for deferred in config.deferred_binds() {
+            println!("{deferred} resolves against the connected keyboard");
+        }
         return Ok(());
     }
     crate::rynk_client::run_config(selector, command)
@@ -227,8 +236,7 @@ pub async fn operate(client: &Client, command: &ConfigCommand) -> Result<()> {
             println!("pulled live runtime configuration into {}", file.display());
         }
         ConfigCommand::Diff { file, exact } => {
-            let config = resolve_lighting_targets(client, parse(file)?).await?;
-            let mut desired = config.snapshot()?;
+            let mut desired = desired_snapshot(client, parse(file)?).await?;
             if *exact {
                 claim_every_behavior_table(&mut desired);
             }
@@ -242,8 +250,7 @@ pub async fn operate(client: &Client, command: &ConfigCommand) -> Result<()> {
             dry_run,
             exact,
         } => {
-            let config = resolve_lighting_targets(client, parse(file)?).await?;
-            let mut desired = config.snapshot()?;
+            let mut desired = desired_snapshot(client, parse(file)?).await?;
             if *exact {
                 claim_every_behavior_table(&mut desired);
             }

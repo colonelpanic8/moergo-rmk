@@ -101,6 +101,38 @@ apply` resolve it through the topology advertised by the connected keyboard,
 including every emitter associated with that key. Raw LED targets remain
 available for underglow, indicators, and other emitters that are not keys.
 
+The same selectors address key bindings. A layer's `keys` grid is the fastest
+way to read a whole layer and the worst way to say "every key in this zone", so
+`[[layer.bind]]` entries layer over the grid:
+
+```toml
+[[layer]]
+id = "magic"
+name = "Magic"
+keys = """…"""
+
+[[layer.bind]]
+key = [3, 0]
+action = "QK_BOOT"
+
+[[layer.bind]]
+zone = 1
+action = "KC_NO"
+```
+
+Binds apply after the grid in file order, and the last one covering a key wins
+it, so a broad selector can be written first and corrected afterwards. A layer
+with no `keys` at all starts transparent. `led = N` binds the key that owns
+that emitter, and `all = true` binds every key the topology advertises.
+
+Only `key = [row, col]` is a question about the matrix; the rest are questions
+about the board, so `config validate` checks that they are well formed and
+names them as resolving against a connected keyboard, while `config diff` and
+`config apply` resolve them for real. The keyboard stores a grid rather than
+the selectors a file used to describe one, so `config pull` writes the whole
+layer back as `keys` — the same flattening that turns pulled lighting cells
+back into `led` selectors.
+
 Unlike `[[lighting.scene]]`, this table is ordered: matching rules compose in
 table order and later ones win the slots they share, so `config diff` reports
 by position and reordering two rules is a real difference. The table is written
