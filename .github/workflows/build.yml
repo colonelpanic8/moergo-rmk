@@ -13,16 +13,16 @@ jobs:
         with:
           submodules: recursive
       - uses: cachix/install-nix-action@v25
-      - name: Check host crates
-        run: nix develop --command just check
-      - name: Build and validate both firmware halves
+      - name: Check host crates and board parity
+        run: nix develop --command just parity-check
+      - name: Build and validate Glove80 firmware
         run: nix develop --command just dist
       - name: Upload release bundle
         uses: actions/upload-artifact@v4
         with:
           name: glove80-rmk
           path: dist/
-      - name: Build and validate experimental Go60 firmware
+      - name: Build and validate Go60 firmware
         run: nix develop --command just go60-firmware
       - name: Upload Go60 bundle
         uses: actions/upload-artifact@v4
@@ -75,7 +75,7 @@ jobs:
             done
             tag="v${day}.${build}"
           fi
-          title="Glove80 firmware ${tag#v} (default configuration)"
+          title="MoErgo firmware ${tag#v} (default configurations)"
 
           previous="$(git describe --tags --abbrev=0 "${GITHUB_SHA}^" 2>/dev/null || true)"
           if [ -n "${previous}" ]; then
@@ -88,7 +88,7 @@ jobs:
             echo
             echo "${changes:-- No commits since the previous release.}"
             echo
-            echo "The experimental Go60 firmware is attached as go60-rmk.zip."
+            echo "The Go60 firmware is attached as go60-rmk.zip."
           } > release-notes.md
 
           if gh release view "${tag}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
