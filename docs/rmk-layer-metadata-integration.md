@@ -1,7 +1,7 @@
 # RMK persistent layer metadata integration
 
 This repository is qualified against generated RMK commit
-`9d064b8f1347919b0ba7c3b25c06a73d9fcb7395`.
+`79a8f38d6082c98abf8b140875e3347b222bd62d`.
 
 That commit was generated locally by `fork-assembler` from the RMK assembly
 base `1a411da55bca` with the following first entry:
@@ -27,6 +27,6 @@ The assembly resolution must retain all of these coherence changes:
   snapshot capture/application, so split renderers preserve runtime rewrites.
 
 The generated qualification tree contains those resolutions and the complete
-carried stack. Its final generated patch commit adds the retained pointing
-WASM endpoints after the runtime-lighting patch and its replica-state
-resolution.
+carried stack. The final coherence fixup is captured on `feat/device-data`,
+then the generated runtime-lighting resolution retains split wake state and
+the final generated patch commit retains the pointing WASM endpoints.
