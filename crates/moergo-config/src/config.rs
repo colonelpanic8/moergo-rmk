@@ -24,7 +24,7 @@ use rynk::rmk_types::protocol::rynk::{
     PointingDeviceConfig as WirePointingDeviceConfig,
     PointingLayerOverride as WirePointingLayerOverride, BLE_NAME_MAX_LEN,
 };
-use rynk::{KeyId, KeyTopology};
+use rynk::{KeyId, KeyTopology, LogicalKey};
 use serde::{Deserialize, Serialize};
 
 pub const ROWS: u8 = 6;
@@ -398,7 +398,85 @@ const fn default_auto_mouse_threshold() -> u16 {
 pub struct LayerConfig {
     pub id: String,
     pub name: String,
+    /// The whole layer as a row-major grid. An absent grid starts the layer
+    /// transparent, which is what a layer written entirely as `[[layer.bind]]`
+    /// entries wants.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub keys: String,
+    /// Selector-addressed bindings layered over `keys`.
+    #[serde(default, rename = "bind", skip_serializing_if = "Vec::is_empty")]
+    pub binds: Vec<BindConfig>,
+}
+
+impl LayerConfig {
+    /// The layer as the firmware holds it: the grid with every bind applied
+    /// over it.
+    fn actions(
+        &self,
+        profile_names: &[String],
+        topology: Option<&KeyTopology>,
+        rows: u8,
+        cols: u8,
+    ) -> Result<Vec<KeyAction>> {
+        let mut actions = if self.keys.trim().is_empty() {
+            vec![KeyAction::Transparent; usize::from(rows) * usize::from(cols)]
+        } else {
+            parse_key_actions_for_matrix(&self.keys, profile_names, rows, cols)?
+        };
+        for bind in &self.binds {
+            // The action is checked even for a bind whose target this caller
+            // cannot resolve, so an offline validation still catches a typo in
+            // a zone-addressed entry.
+            let action = parse_key_action(&bind.action, profile_names)
+                .with_context(|| format!("bind {}", bind.target))?;
+            let Some(positions) = bind.positions(topology, rows, cols)? else {
+                continue;
+            };
+            for [row, col] in positions {
+                actions[usize::from(row) * usize::from(cols) + usize::from(col)] = action;
+            }
+        }
+        Ok(actions)
+    }
+}
+
+/// One key binding addressed the way a lighting cell is addressed.
+///
+/// A grid is the fastest way to read a whole layer and the worst way to say
+/// "the left thumb cluster"; these entries cover the second case. They apply
+/// after the grid in file order, so a broad selector can be written first and
+/// corrected afterwards, and the last entry covering a key wins it.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub struct BindConfig {
+    #[serde(flatten)]
+    pub target: KeyTargetConfig,
+    /// The action, spelled the way `keys` spells one.
+    pub action: String,
+}
+
+impl BindConfig {
+    /// The matrix keys this entry writes, or `None` when it needs a topology
+    /// the caller does not have.
+    fn positions(
+        &self,
+        topology: Option<&KeyTopology>,
+        rows: u8,
+        cols: u8,
+    ) -> Result<Option<Vec<[u8; 2]>>> {
+        let positions = match topology {
+            Some(topology) => self.target.resolve_matrix_keys(topology)?,
+            None => match self.target {
+                KeyTargetConfig::MatrixKey { key } => vec![key],
+                _ => return Ok(None),
+            },
+        };
+        for [row, col] in &positions {
+            if *row >= rows || *col >= cols {
+                bail!("bind {} is outside the {rows}x{cols} matrix", self.target);
+            }
+        }
+        Ok(Some(positions))
+    }
 }
 
 /// A morse (tap-dance) key, addressed from the keymap as `TD(n)` by its
@@ -633,10 +711,11 @@ pub enum EffectKind {
 
 /// One readable way to name part of the keyboard.
 ///
-/// The vocabulary is not specific to lighting: a target lowers to the emitters
-/// a selector covers, and everything but `key = [row, col]` is a question
-/// about the board rather than about the matrix, so it needs the topology the
-/// keyboard advertises.
+/// The same vocabulary addresses lighting cells and key bindings: a lighting
+/// target lowers to the emitters a selector covers, a `[[layer.bind]]` lowers
+/// to the matrix keys it covers. Everything but `key = [row, col]` is a
+/// question about the board rather than about the matrix, so it needs the
+/// topology the keyboard advertises.
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(untagged)]
 pub enum KeyTargetConfig {
@@ -675,6 +754,87 @@ impl KeyTargetConfig {
                 None
             }
         }
+    }
+
+    /// Whether resolving this selector needs the keyboard's advertised
+    /// topology. A matrix position is already the address the keymap uses, so
+    /// it resolves offline.
+    pub const fn needs_topology(&self) -> bool {
+        !matches!(*self, Self::MatrixKey { .. })
+    }
+
+    /// Lower this selector to the matrix keys it covers, in topology order.
+    pub fn resolve_matrix_keys(&self, topology: &KeyTopology) -> Result<Vec<[u8; 2]>> {
+        let matrix_of = |led: LightingLedId| {
+            topology
+                .leds
+                .iter()
+                .find(|emitter| emitter.id == led)
+                .and_then(|emitter| emitter.key)
+        };
+        let keys: Vec<LogicalKey> = match *self {
+            Self::Led { led } => {
+                let emitter = LightingLedId(led);
+                if !topology
+                    .leds
+                    .iter()
+                    .any(|candidate| candidate.id == emitter)
+                {
+                    bail!("unknown LED {led}");
+                }
+                let matrix =
+                    matrix_of(emitter).with_context(|| format!("LED {led} belongs to no key"))?;
+                topology.select(&matrix).copied().collect()
+            }
+            Self::KeyId { key } => {
+                let id = KeyId(key);
+                if !topology.keys.iter().any(|candidate| candidate.id == id) {
+                    bail!("unknown logical key id {key}");
+                }
+                topology.select(&id).copied().collect()
+            }
+            Self::MatrixKey { key: [row, col] } => {
+                let matrix = LightingMatrixPosition { row, col };
+                if !topology
+                    .keys
+                    .iter()
+                    .any(|candidate| candidate.matrix == matrix)
+                {
+                    bail!("unknown matrix key [{row}, {col}]");
+                }
+                topology.select(&matrix).copied().collect()
+            }
+            Self::Zone { zone } => {
+                let zone_id = LightingZoneId(zone);
+                if !topology.has_zone(zone_id) {
+                    bail!("unknown lighting zone {zone}");
+                }
+                let members = topology
+                    .resolve_zone_leds(zone_id)
+                    .into_iter()
+                    .filter_map(matrix_of)
+                    .collect::<Vec<_>>();
+                topology
+                    .keys
+                    .iter()
+                    .filter(|key| members.contains(&key.matrix))
+                    .copied()
+                    .collect()
+            }
+            Self::All { all } => {
+                if !all {
+                    bail!("the all selector must be true");
+                }
+                topology.keys.clone()
+            }
+        };
+        if keys.is_empty() {
+            bail!("{self} covers no keys");
+        }
+        Ok(keys
+            .into_iter()
+            .map(|key| [key.matrix.row, key.matrix.col])
+            .collect())
     }
 }
 
@@ -1184,7 +1344,40 @@ impl RuntimeConfig {
         config.snapshot().map(|_| config)
     }
 
+    /// The managed state this configuration describes, resolving whatever a
+    /// selector can be resolved to without a keyboard.
+    ///
+    /// A `[[layer.bind]]` addressed by anything other than a matrix position
+    /// asks a question about the board — which keys a zone holds, which key
+    /// owns an emitter — so it is left out here rather than guessed at. Use
+    /// [`Self::snapshot_with_topology`] before writing to a keyboard, and
+    /// [`Self::deferred_binds`] to report what an offline check could not
+    /// cover.
     pub fn snapshot(&self) -> Result<Snapshot> {
+        self.build_snapshot(None)
+    }
+
+    /// [`Self::snapshot`] against a keyboard's advertised topology, so every
+    /// selector resolves.
+    pub fn snapshot_with_topology(&self, topology: &KeyTopology) -> Result<Snapshot> {
+        self.build_snapshot(Some(topology))
+    }
+
+    /// The binds an offline snapshot leaves out, described for a report.
+    pub fn deferred_binds(&self) -> Vec<String> {
+        self.layers
+            .iter()
+            .flat_map(|layer| {
+                layer
+                    .binds
+                    .iter()
+                    .filter(|bind| bind.target.needs_topology())
+                    .map(|bind| format!("layer '{}' bind {}", layer.id, bind.target))
+            })
+            .collect()
+    }
+
+    fn build_snapshot(&self, topology: Option<&KeyTopology>) -> Result<Snapshot> {
         if self.rows == 0 || self.cols == 0 {
             bail!("rows and cols must both be non-zero");
         }
@@ -1219,7 +1412,8 @@ impl RuntimeConfig {
                 bail!("duplicate layer id '{}'", layer.id);
             }
             layers.push(
-                parse_key_actions_for_matrix(&layer.keys, &profile_names, self.rows, self.cols)
+                layer
+                    .actions(&profile_names, topology, self.rows, self.cols)
                     .with_context(|| format!("layer {} ({})", index, layer.id))?,
             );
         }
@@ -1411,6 +1605,10 @@ impl RuntimeConfig {
                         snapshot.rows,
                         snapshot.cols,
                     ),
+                    // A keyboard holds a grid, not the selectors a source used
+                    // to describe one, exactly as it holds resolved LED cells
+                    // rather than lighting selectors.
+                    binds: Vec::new(),
                 }
             })
             .collect();
@@ -3403,6 +3601,7 @@ mod tests {
                 id: "base".into(),
                 name: "Base".into(),
                 keys: render_key_actions(&[KeyAction::No; LAYER_SIZE], &[]),
+                binds: Vec::new(),
             }],
             morses: Vec::new(),
             combos: Vec::new(),
@@ -3588,6 +3787,158 @@ color = "#0000ff"
                 .unwrap_err()
                 .to_string()
                 .contains(expected));
+        }
+    }
+
+    /// Two keys, three key-attached emitters, and one emitter that belongs to
+    /// no key: enough shape to tell the selectors apart.
+    fn two_key_topology() -> KeyTopology {
+        use rynk::rmk_types::protocol::rynk::{LightingLed, LightingZone};
+
+        let emitter = |id, key, zone_start, zone_len| LightingLed {
+            id: LightingLedId(id),
+            key,
+            position: None,
+            zone_start,
+            zone_len,
+        };
+        let first = LightingMatrixPosition { row: 0, col: 0 };
+        let second = LightingMatrixPosition { row: 0, col: 1 };
+        KeyTopology::new(
+            3,
+            vec![first, second],
+            vec![
+                emitter(34, Some(first), 0, 1),
+                emitter(80, Some(first), 1, 1),
+                emitter(22, Some(second), 2, 1),
+                emitter(99, None, 3, 1),
+            ],
+            vec![
+                LightingZone {
+                    id: LightingZoneId(1),
+                    name: "keys".try_into().unwrap(),
+                },
+                LightingZone {
+                    id: LightingZoneId(2),
+                    name: "accent".try_into().unwrap(),
+                },
+            ],
+            vec![
+                LightingZoneId(1),
+                LightingZoneId(1),
+                LightingZoneId(2),
+                LightingZoneId(2),
+            ],
+        )
+        .unwrap()
+    }
+
+    fn bound(target: KeyTargetConfig, action: &str) -> BindConfig {
+        BindConfig {
+            target,
+            action: action.to_owned(),
+        }
+    }
+
+    fn action(text: &str) -> KeyAction {
+        parse_key_action(text, &[]).unwrap()
+    }
+
+    #[test]
+    fn binds_apply_over_the_grid_in_file_order() {
+        let mut config = minimal_runtime_config(None);
+        config.layers[0].binds = vec![
+            bound(KeyTargetConfig::matrix_key(0, 0), "KC_A"),
+            bound(KeyTargetConfig::matrix_key(0, 0), "KC_B"),
+            bound(KeyTargetConfig::matrix_key(1, 2), "MO(0)"),
+        ];
+
+        let layer = &config.snapshot().unwrap().layers[0];
+        assert_eq!(layer[0], action("KC_B"));
+        assert_eq!(layer[usize::from(COLS) + 2], action("MO(0)"));
+        assert_eq!(layer[1], KeyAction::No);
+    }
+
+    #[test]
+    fn a_layer_written_only_as_binds_starts_transparent_and_round_trips() {
+        let mut config = minimal_runtime_config(None);
+        config.layers.push(LayerConfig {
+            id: "magic".into(),
+            name: "Magic".into(),
+            keys: String::new(),
+            binds: vec![bound(KeyTargetConfig::matrix_key(3, 0), "QK_BOOT")],
+        });
+
+        let encoded = config.to_toml().unwrap();
+        assert!(encoded.contains("[[layer.bind]]"));
+        let decoded = RuntimeConfig::from_toml(&encoded).unwrap();
+
+        let layer = &decoded.snapshot().unwrap().layers[1];
+        assert_eq!(layer[0], KeyAction::Transparent);
+        assert_eq!(layer[3 * usize::from(COLS)], action("QK_BOOT"));
+    }
+
+    #[test]
+    fn binds_resolve_every_selector_through_the_topology() {
+        let topology = two_key_topology();
+        let mut config = minimal_runtime_config(None);
+        for (target, expected) in [
+            (KeyTargetConfig::zone(2), vec![1usize]),
+            (KeyTargetConfig::all(), vec![0, 1]),
+            (KeyTargetConfig::led(80), vec![0]),
+            (KeyTargetConfig::key(1), vec![1]),
+            (KeyTargetConfig::matrix_key(0, 0), vec![0]),
+        ] {
+            config.layers[0].binds = vec![bound(target, "KC_A")];
+            let layer = &config.snapshot_with_topology(&topology).unwrap().layers[0];
+            let bound_offsets = (0..2)
+                .filter(|offset| layer[*offset] == action("KC_A"))
+                .collect::<Vec<_>>();
+            assert_eq!(bound_offsets, expected, "{target}");
+        }
+    }
+
+    #[test]
+    fn an_offline_snapshot_defers_the_selectors_it_cannot_resolve() {
+        let mut config = minimal_runtime_config(None);
+        config.layers[0].binds = vec![
+            bound(KeyTargetConfig::zone(2), "KC_A"),
+            bound(KeyTargetConfig::matrix_key(0, 1), "KC_B"),
+        ];
+
+        assert_eq!(
+            config.deferred_binds(),
+            vec!["layer 'base' bind zone 2".to_owned()]
+        );
+        let layer = &config.snapshot().unwrap().layers[0];
+        assert_eq!(layer[0], KeyAction::No);
+        assert_eq!(layer[1], action("KC_B"));
+    }
+
+    #[test]
+    fn a_bind_is_rejected_by_its_target_and_by_its_action() {
+        let topology = two_key_topology();
+        let mut config = minimal_runtime_config(None);
+
+        config.layers[0].binds = vec![bound(KeyTargetConfig::matrix_key(9, 9), "KC_A")];
+        assert!(format!("{:#}", config.snapshot().unwrap_err())
+            .contains("bind key [9, 9] is outside the 6x14 matrix"));
+
+        config.layers[0].binds = vec![bound(KeyTargetConfig::zone(2), "KC_NOT_A_KEY")];
+        assert!(format!("{:#}", config.snapshot().unwrap_err()).contains("bind zone 2"));
+
+        for (target, expected) in [
+            (KeyTargetConfig::zone(9), "unknown lighting zone 9"),
+            (KeyTargetConfig::key(9), "unknown logical key id 9"),
+            (KeyTargetConfig::led(99), "LED 99 belongs to no key"),
+            (KeyTargetConfig::led(7), "unknown LED 7"),
+        ] {
+            config.layers[0].binds = vec![bound(target, "KC_A")];
+            assert!(format!(
+                "{:#}",
+                config.snapshot_with_topology(&topology).unwrap_err()
+            )
+            .contains(expected));
         }
     }
 
