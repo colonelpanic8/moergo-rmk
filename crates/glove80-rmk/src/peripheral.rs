@@ -1,7 +1,16 @@
 #![no_main]
 #![no_std]
 
-use moergo_rmk::lighting;
+pub const BOARD_LEDS_PER_HALF: usize = 40;
+pub const BOARD_CHANNEL_CEILING: u8 = 230;
+pub const BOARD_MAINTENANCE_LED: u16 = 12;
+
+#[allow(dead_code)]
+#[path = "../../moergo-rmk/src/lighting.rs"]
+mod lighting;
+#[allow(dead_code)]
+#[path = "../../moergo-rmk/src/split_lighting.rs"]
+mod split_lighting;
 
 use rmk::macros::rmk_peripheral;
 

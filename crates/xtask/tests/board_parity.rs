@@ -13,8 +13,17 @@ fn manifest(board: &str) -> toml::Value {
     toml::from_str(&fs::read_to_string(path).unwrap()).unwrap()
 }
 
+fn board_source(board: &str, half: &str) -> String {
+    let path = repo_root()
+        .join("crates")
+        .join(board)
+        .join("src")
+        .join(format!("{half}.rs"));
+    fs::read_to_string(path).unwrap()
+}
+
 #[test]
-fn board_firmware_uses_the_same_shared_service_and_rmk_features() {
+fn board_firmware_compiles_the_same_shared_sources_and_rmk_features() {
     let glove80 = manifest("glove80-rmk");
     let go60 = manifest("go60-rmk");
 
@@ -25,17 +34,35 @@ fn board_firmware_uses_the_same_shared_service_and_rmk_features() {
         "board crates must enable the same RMK capabilities"
     );
 
-    for (board, feature, dependencies) in [
-        ("glove80-rmk", "glove80", glove80_dependencies),
-        ("go60-rmk", "go60", go60_dependencies),
-    ] {
-        let shared = &dependencies["moergo-rmk"];
-        assert_eq!(shared["path"].as_str(), Some("../moergo-rmk"));
-        assert_eq!(
-            shared["features"].as_array().unwrap(),
-            &[toml::Value::String(feature.into())],
-            "{board} must select only its own board constants"
+    for board in ["glove80-rmk", "go60-rmk"] {
+        assert!(
+            !manifest(board)["dependencies"]
+                .as_table()
+                .unwrap()
+                .contains_key("moergo-rmk"),
+            "{board} must compile firmware tasks in the board binary"
         );
+
+        let central = board_source(board, "central");
+        for module in [
+            "central_lighting.rs",
+            "lighting.rs",
+            "remote_boot.rs",
+            "split_lighting.rs",
+        ] {
+            assert!(
+                central.contains(&format!("../../moergo-rmk/src/{module}")),
+                "{board} central must use shared {module}"
+            );
+        }
+
+        let peripheral = board_source(board, "peripheral");
+        for module in ["lighting.rs", "split_lighting.rs"] {
+            assert!(
+                peripheral.contains(&format!("../../moergo-rmk/src/{module}")),
+                "{board} peripheral must use shared {module}"
+            );
+        }
     }
 }
 

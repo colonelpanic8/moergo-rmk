@@ -8,7 +8,6 @@ description = "Experimental RMK firmware for the MoErgo Go60"
 [workspace]
 
 [dependencies]
-moergo-rmk = { path = "../moergo-rmk", features = ["go60"] }
 rmk = { path = "../../dependencies/rmk/rmk", default-features = false, features = [
     "defmt",
     "storage",
