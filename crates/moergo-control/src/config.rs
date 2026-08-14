@@ -17,13 +17,13 @@ use moergo_config::{
 };
 use rynk::rmk_types::morse::MorseProfileName;
 use rynk::rmk_types::protocol::rynk::{
-    BleName, Cmd, LightingError, LightingExtendedConditionalSceneCell, LightingExtensionNameKind,
-    LightingExtensionParamsRequest, LightingFeatureFlags, LightingMutableState,
-    MorseProfileEntry as WireMorseProfileEntry, RynkError, SetAutoMouseLayerConfigsRequest,
-    SetKeymapBulkRequest, SetLightingExtensionLayersRequest, SetLightingExtensionParamRequest,
-    SetLightingExtensionStateRequest, SetLightingLayerPolicyRequest, SetLightingOutputModeRequest,
-    SetLightingStateRequest, SetLightingWakeLayersRequest, SetMorseHoldTriggerPositionsRequest,
-    SetMorseProfileEntryRequest,
+    BleName, Cmd, LayerMetadata, LightingError, LightingExtendedConditionalSceneCell,
+    LightingExtensionNameKind, LightingExtensionParamsRequest, LightingFeatureFlags,
+    LightingMutableState, MorseProfileEntry as WireMorseProfileEntry, RynkError,
+    SetAutoMouseLayerConfigsRequest, SetKeymapBulkRequest, SetLightingExtensionLayersRequest,
+    SetLightingExtensionParamRequest, SetLightingExtensionStateRequest,
+    SetLightingLayerPolicyRequest, SetLightingOutputModeRequest, SetLightingStateRequest,
+    SetLightingWakeLayersRequest, SetMorseHoldTriggerPositionsRequest, SetMorseProfileEntryRequest,
 };
 use rynk::{Client, RynkHostError};
 
@@ -427,6 +427,7 @@ async fn read_snapshot(client: &Client) -> Result<Snapshot> {
             .map(|name| name.template.as_str().to_owned()),
         default_layer: client.get_default_layer().await?,
         layers,
+        layer_names: read_layer_names(client, capabilities.num_layers).await?,
         behaviors: read_behaviors(client).await?,
         pointing: optional_endpoint(client.get_pointing_config().await)?,
         lighting: Some(LightingSnapshot {
@@ -637,6 +638,21 @@ fn optional_endpoint<T>(result: std::result::Result<T, RynkHostError>) -> Result
         Err(error) if endpoint_unsupported(&error) => Ok(None),
         Err(error) => Err(error.into()),
     }
+}
+
+/// Read every physical layer slot's persistent metadata.
+///
+/// Firmware without the layer-metadata endpoints reads as `None`, which leaves
+/// names out of the diff rather than reporting every layer as changed.
+async fn read_layer_names(client: &Client, num_layers: u8) -> Result<Option<Vec<LayerMetadata>>> {
+    let mut slots = Vec::with_capacity(usize::from(num_layers));
+    for layer in 0..num_layers {
+        match optional_endpoint(client.get_layer_metadata(layer).await)? {
+            Some(metadata) => slots.push(metadata),
+            None => return Ok(None),
+        }
+    }
+    Ok(Some(slots))
 }
 
 /// Read the fork table a slot at a time.
@@ -1018,6 +1034,25 @@ async fn apply_snapshot(client: &Client, desired: &Snapshot, before: &Snapshot) 
     }
     if desired.default_layer != before.default_layer {
         client.set_default_layer(desired.default_layer).await?;
+    }
+    // Names follow the keymap so a slot is already occupied by the time it is
+    // labelled. Trailing slots the file does not list keep their metadata,
+    // matching how their keys are left alone.
+    if let Some(wanted) = &desired.layer_names {
+        for (layer, metadata) in wanted.iter().enumerate() {
+            let present = before
+                .layer_names
+                .as_ref()
+                .and_then(|names| names.get(layer));
+            if present == Some(metadata) {
+                continue;
+            }
+            let layer = u8::try_from(layer).context("too many configured layers")?;
+            client
+                .set_layer_metadata(layer, metadata.clone())
+                .await
+                .with_context(|| format!("could not write layer {layer} name"))?;
+        }
     }
     if let Some(wanted) = desired.pointing {
         let differs = before.pointing.as_ref().is_none_or(|present| {

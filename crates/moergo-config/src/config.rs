@@ -13,7 +13,7 @@ use rynk::rmk_types::pointing::{
     PointingMode, ScrollConfig as WireScrollConfig, SniperConfig as WireSniperConfig,
 };
 use rynk::rmk_types::protocol::rynk::{
-    BehaviorConfig as WireBehaviorConfig, BehaviorOptions as WireBehaviorOptions,
+    BehaviorConfig as WireBehaviorConfig, BehaviorOptions as WireBehaviorOptions, LayerMetadata,
     LightingActiveTransport, LightingBackgroundMode, LightingBackgroundState,
     LightingBatteryCondition, LightingBondedSlotCondition, LightingChargeCondition,
     LightingConditionSet, LightingConditionalSceneCell, LightingConnectionCondition,
@@ -22,7 +22,7 @@ use rynk::rmk_types::protocol::rynk::{
     LightingMatrixPosition, LightingNodeId, LightingOutputMode, LightingRgb8, LightingSceneCell,
     LightingZoneId, PointingConfig as WirePointingConfig,
     PointingDeviceConfig as WirePointingDeviceConfig,
-    PointingLayerOverride as WirePointingLayerOverride, BLE_NAME_MAX_LEN,
+    PointingLayerOverride as WirePointingLayerOverride, BLE_NAME_MAX_LEN, LAYER_NAME_MAX_LEN,
 };
 use rynk::{KeyId, KeyTopology, LogicalKey};
 use serde::{Deserialize, Serialize};
@@ -1025,6 +1025,12 @@ pub struct Snapshot {
     pub bluetooth_name: Option<String>,
     pub default_layer: u8,
     pub layers: Vec<Vec<KeyAction>>,
+    /// Persistent per-slot layer occupancy and names. A source describes only
+    /// the layers it configures; a keyboard reports every physical slot.
+    ///
+    /// `None` means the source or firmware does not manage layer metadata, so
+    /// names are left as the keyboard holds them.
+    pub layer_names: Option<Vec<LayerMetadata>>,
     pub lighting: Option<LightingSnapshot>,
     /// The behavior tables a keymap cell addresses by index: morses for
     /// `TD(n)`, macros for `TriggerMacro(n)`, and the combos that fire
@@ -1477,12 +1483,19 @@ impl RuntimeConfig {
                 }
             }
         }
+        let layer_names = self
+            .layers
+            .iter()
+            .enumerate()
+            .map(|(index, layer)| layer_metadata(index, &layer.name))
+            .collect::<Result<Vec<_>>>()?;
         Ok(Snapshot {
             rows: self.rows,
             cols: self.cols,
             bluetooth_name: self.bluetooth_name.clone(),
             default_layer: self.default_layer,
             layers,
+            layer_names: Some(layer_names),
             lighting,
             pointing: self
                 .pointing
@@ -1596,9 +1609,19 @@ impl RuntimeConfig {
             .enumerate()
             .map(|(index, keys)| {
                 let old = labels.and_then(|config| config.layers.get(index));
+                // The firmware persists layer names, so a live slot wins over
+                // the label a previous file gave this index.
+                let stored = snapshot
+                    .layer_names
+                    .as_ref()
+                    .and_then(|names| names.get(index))
+                    .filter(|slot| slot.occupied)
+                    .map(|slot| slot.name.as_str().to_owned());
                 LayerConfig {
                     id: old.map_or_else(|| format!("layer{index}"), |layer| layer.id.clone()),
-                    name: old.map_or_else(|| format!("Layer {index}"), |layer| layer.name.clone()),
+                    name: stored.unwrap_or_else(|| {
+                        old.map_or_else(|| format!("Layer {index}"), |layer| layer.name.clone())
+                    }),
                     keys: render_key_actions_for_matrix(
                         keys,
                         &profile_names,
@@ -2519,6 +2542,21 @@ fn is_empty_fork(fork: &rynk::rmk_types::fork::Fork) -> bool {
     fork.trigger == rynk::rmk_types::action::KeyAction::No
 }
 
+/// An occupied metadata slot for a configured layer, rejected when the name
+/// cannot fit the fixed-capacity firmware slot.
+fn layer_metadata(index: usize, name: &str) -> Result<LayerMetadata> {
+    let name = name.trim();
+    Ok(LayerMetadata {
+        occupied: true,
+        name: heapless::String::try_from(name).map_err(|_| {
+            anyhow::anyhow!(
+                "layer {index} name is {} bytes; the maximum is {LAYER_NAME_MAX_LEN}",
+                name.len()
+            )
+        })?,
+    })
+}
+
 pub fn differences(desired: &Snapshot, live: &Snapshot) -> Vec<String> {
     let mut result = Vec::new();
     if desired.rows != live.rows || desired.cols != live.cols {
@@ -2559,6 +2597,22 @@ pub fn differences(desired: &Snapshot, live: &Snapshot) -> Vec<String> {
                     offset % usize::from(desired.cols),
                     render_key_action(wanted, &[]),
                     render_key_action(present, &[]),
+                ));
+            }
+        }
+    }
+    if let (Some(desired_names), Some(live_names)) = (&desired.layer_names, &live.layer_names) {
+        for (layer, wanted) in desired_names.iter().enumerate() {
+            let present = live_names.get(layer);
+            if present != Some(wanted) {
+                result.push(format!(
+                    "layer {layer} name: file '{}' != keyboard {}",
+                    wanted.name,
+                    present.map_or("unsupported".to_owned(), |slot| if slot.occupied {
+                        format!("'{}'", slot.name)
+                    } else {
+                        "vacant".to_owned()
+                    }),
                 ));
             }
         }
@@ -3959,6 +4013,61 @@ color = "#0000ff"
     }
 
     #[test]
+    fn layer_names_diff_against_the_keyboards_persistent_metadata() {
+        let snapshot = minimal_runtime_config(None).snapshot().unwrap();
+        assert_eq!(
+            snapshot.layer_names.as_deref(),
+            Some(&[layer_metadata(0, "Base").unwrap()][..])
+        );
+        assert!(differences(&snapshot, &snapshot).is_empty());
+
+        // A renamed slot, a vacant slot, and firmware without the endpoint are
+        // each distinguishable in the report.
+        let mut renamed = snapshot.clone();
+        renamed.layer_names = Some(vec![layer_metadata(0, "Alpha").unwrap()]);
+        assert_eq!(
+            differences(&snapshot, &renamed),
+            vec!["layer 0 name: file 'Base' != keyboard 'Alpha'"]
+        );
+
+        let mut vacant = snapshot.clone();
+        vacant.layer_names = Some(vec![LayerMetadata::vacant()]);
+        assert_eq!(
+            differences(&snapshot, &vacant),
+            vec!["layer 0 name: file 'Base' != keyboard vacant"]
+        );
+
+        let mut unsupported = snapshot.clone();
+        unsupported.layer_names = None;
+        assert!(differences(&snapshot, &unsupported).is_empty());
+    }
+
+    #[test]
+    fn a_layer_name_must_fit_the_firmware_slot() {
+        let mut config = minimal_runtime_config(None);
+        config.layers[0].name = "x".repeat(LAYER_NAME_MAX_LEN + 1);
+        assert!(config.snapshot().unwrap_err().to_string().contains("33"));
+    }
+
+    #[test]
+    fn pull_takes_layer_names_from_the_keyboard_over_the_previous_file() {
+        let previous = minimal_runtime_config(None);
+        let mut snapshot = previous.snapshot().unwrap();
+        snapshot.layer_names = Some(vec![layer_metadata(0, "Alpha").unwrap()]);
+        assert_eq!(
+            RuntimeConfig::from_snapshot(&snapshot, Some(&previous)).layers[0].name,
+            "Alpha"
+        );
+
+        // Firmware without the endpoint leaves the label the file already had.
+        snapshot.layer_names = None;
+        assert_eq!(
+            RuntimeConfig::from_snapshot(&snapshot, Some(&previous)).layers[0].name,
+            "Base"
+        );
+    }
+
+    #[test]
     fn existing_style_keymap_round_trips() {
         let keys = "\n-- -- KC_A KC_TRNS LT(1,KC_ESC) -- -- -- -- -- -- -- -- --\n-- -- -- -- -- -- -- -- -- -- -- -- -- --\n-- -- -- -- -- -- -- -- -- -- -- -- -- --\n-- -- -- -- -- -- -- -- -- -- -- -- -- --\n-- -- -- -- -- -- -- -- -- -- -- -- -- --\n-- -- -- -- -- -- -- -- -- -- -- -- -- --\n";
         let parsed = parse_keys(keys).unwrap();
@@ -4357,6 +4466,7 @@ Density = 6
                 behaviors: BehaviorSnapshot::default(),
                 default_layer: 0,
                 layers: Vec::new(),
+                layer_names: None,
                 lighting: Some(snap),
                 pointing: None,
             }
@@ -4386,6 +4496,7 @@ Density = 6
                 behaviors: BehaviorSnapshot::default(),
                 default_layer: 0,
                 layers: Vec::new(),
+                layer_names: None,
                 lighting: Some(snap),
                 pointing: None,
             }
@@ -4400,6 +4511,7 @@ Density = 6
                 behaviors: BehaviorSnapshot::default(),
                 default_layer: 0,
                 layers: Vec::new(),
+                layer_names: None,
                 lighting: Some(snap),
                 pointing: None,
             }
@@ -4434,6 +4546,7 @@ Density = 6
                 behaviors: BehaviorSnapshot::default(),
                 default_layer: 0,
                 layers: Vec::new(),
+                layer_names: None,
                 lighting: Some(snap),
                 pointing: None,
             }
@@ -4464,6 +4577,7 @@ Density = 6
             bluetooth_name: None,
             default_layer: 0,
             layers: Vec::new(),
+            layer_names: None,
             lighting: None,
             behaviors: BehaviorSnapshot {
                 // The file claims the table and names nothing in it.
@@ -4478,6 +4592,7 @@ Density = 6
             bluetooth_name: None,
             default_layer: 0,
             layers: Vec::new(),
+            layer_names: None,
             lighting: None,
             behaviors: BehaviorSnapshot {
                 combos: Some(vec![
@@ -4684,6 +4799,7 @@ Density = 6
             behaviors: BehaviorSnapshot::default(),
             default_layer: 0,
             layers: vec![vec![KeyAction::No; LAYER_SIZE]],
+            layer_names: None,
             lighting: Some(lighting_snapshot(
                 Some(effects_with(&[("Density", 6), ("Trail Length", 128)])),
                 Some(vec![param_set(
@@ -4709,6 +4825,7 @@ Density = 6
             behaviors: BehaviorSnapshot::default(),
             default_layer: 0,
             layers: vec![vec![KeyAction::No; LAYER_SIZE]],
+            layer_names: None,
             lighting: Some(lighting_snapshot(
                 Some(effects_with(&[("Density", 6)])),
                 None,
