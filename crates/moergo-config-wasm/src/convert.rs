@@ -74,6 +74,7 @@ pub fn snapshot_from_wire(
         bluetooth_name: snapshot.bluetooth_name.clone(),
         default_layer: snapshot.default_layer,
         layers,
+        layer_names: snapshot.layer_names.clone(),
         lighting,
         behaviors: model::BehaviorSnapshot {
             config: snapshot.behaviors.config,
@@ -184,6 +185,7 @@ pub fn snapshot_to_wire(
         bluetooth_name: snapshot.bluetooth_name.clone(),
         default_layer: snapshot.default_layer,
         layers,
+        layer_names: snapshot.layer_names.clone(),
         lighting,
         behaviors: BehaviorSnapshot {
             config: snapshot.behaviors.config,

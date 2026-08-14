@@ -2,6 +2,7 @@
 
 use anyhow::{bail, Context, Result};
 use clap::Subcommand;
+use rynk::rmk_types::protocol::rynk::LAYER_NAME_MAX_LEN;
 
 use crate::keycodes;
 use crate::transport::Selector;
@@ -11,6 +12,14 @@ pub struct KeymapEntry {
     pub layer: u8,
     pub key: u8,
     pub keycode: u16,
+}
+
+/// One layer slot's persistent metadata, as the firmware holds it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LayerName {
+    pub layer: u8,
+    pub occupied: bool,
+    pub name: String,
 }
 
 #[derive(Subcommand)]
@@ -32,6 +41,13 @@ pub enum KeymapCommand {
     },
     /// Read or set the persistent default layer.
     Default { layer: Option<u8> },
+    /// List the persistent layer names, or rename one layer.
+    Name {
+        /// Layer to rename. Omit to list every layer.
+        layer: Option<u8>,
+        /// New name, at most 32 UTF-8 bytes. Omit to read the layer.
+        name: Option<String>,
+    },
     /// Report physical matrix presses for a short diagnostic window.
     Monitor {
         /// Number of seconds to monitor.
@@ -152,6 +168,35 @@ pub fn render_layer(
         output.push('\n');
     }
     output
+}
+
+/// Check a requested layer name against the fixed-capacity firmware slot.
+pub fn parse_layer_name(name: &str) -> Result<String> {
+    let trimmed = name.trim();
+    if trimmed.is_empty() {
+        bail!("a layer name must not be empty");
+    }
+    if trimmed.len() > LAYER_NAME_MAX_LEN {
+        bail!(
+            "layer name is {} bytes; the maximum is {LAYER_NAME_MAX_LEN}",
+            trimmed.len()
+        );
+    }
+    Ok(trimmed.to_owned())
+}
+
+pub fn render_layer_names(slots: &[LayerName]) -> String {
+    slots
+        .iter()
+        .map(|slot| {
+            if slot.occupied {
+                format!("layer {}: {}", slot.layer, slot.name)
+            } else {
+                format!("layer {}: (vacant)", slot.layer)
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 pub fn render_write_outcome(entries: &[KeymapEntry], readback: &[u16], cols: u8) -> String {

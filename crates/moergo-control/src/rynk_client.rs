@@ -9,11 +9,11 @@ use embassy_futures::select::{select, Either};
 use rynk::rmk_types::action::KeyAction;
 use rynk::rmk_types::protocol::rynk::{
     AbortLightingOverlayReplaceRequest, BeginLightingOverlayReplaceRequest,
-    ClearLightingOverlayRequest, CommitLightingOverlayReplaceRequest, LightingBackgroundMode,
-    LightingEffect, LightingEffectFlags, LightingExtensionNameKind, LightingFeatureFlags,
-    LightingFrameRequest, LightingLayerPolicy, LightingLedId, LightingMutableState, LightingNodeId,
-    LightingOverlayCell, LightingRgb8, LightingSceneCell, LightingState,
-    PutLightingOverlayChunkRequest, RynkError, SetLightingExtensionParamRequest,
+    ClearLightingOverlayRequest, CommitLightingOverlayReplaceRequest, LayerMetadata,
+    LightingBackgroundMode, LightingEffect, LightingEffectFlags, LightingExtensionNameKind,
+    LightingFeatureFlags, LightingFrameRequest, LightingLayerPolicy, LightingLedId,
+    LightingMutableState, LightingNodeId, LightingOverlayCell, LightingRgb8, LightingSceneCell,
+    LightingState, PutLightingOverlayChunkRequest, RynkError, SetLightingExtensionParamRequest,
     SetLightingLayerPolicyRequest, SetLightingOverlayRequest, SetLightingSceneCellRequest,
     SetLightingStateRequest, UnsetLightingOverlayRequest, UnsetLightingSceneCellRequest,
 };
@@ -978,7 +978,9 @@ async fn operate(client: &Client, command: &KeymapCommand) -> Result<()> {
 
     if matches!(
         command,
-        KeymapCommand::Set { .. } | KeymapCommand::Default { layer: Some(_) }
+        KeymapCommand::Set { .. }
+            | KeymapCommand::Default { layer: Some(_) }
+            | KeymapCommand::Name { name: Some(_), .. }
     ) {
         require_maintenance_mode(client).await?;
     }
@@ -1074,6 +1076,52 @@ async fn operate(client: &Client, command: &KeymapCommand) -> Result<()> {
             }
             let stored = client.get_default_layer().await?;
             println!("default layer: {stored}");
+        }
+        KeymapCommand::Name { layer, name } => {
+            if let Some(layer) = layer {
+                if *layer >= capabilities.num_layers {
+                    bail!(
+                        "layer {layer} is out of range; Rynk reports {} layer(s)",
+                        capabilities.num_layers
+                    );
+                }
+            } else if name.is_some() {
+                bail!("renaming a layer needs both a layer and a name");
+            }
+
+            if let (Some(layer), Some(name)) = (layer, name) {
+                let name = keymap::parse_layer_name(name)?;
+                let current = client.get_layer_metadata(*layer).await?;
+                if !current.occupied {
+                    bail!("layer {layer} is vacant; only an occupied layer can be renamed");
+                }
+                client
+                    .set_layer_metadata(
+                        *layer,
+                        LayerMetadata {
+                            occupied: true,
+                            name: heapless::String::try_from(name.as_str())
+                                .map_err(|_| anyhow!("layer name does not fit the wire payload"))?,
+                        },
+                    )
+                    .await
+                    .with_context(|| format!("Rynk could not rename layer {layer}"))?;
+            }
+
+            let layers: Vec<u8> = match layer {
+                Some(layer) => vec![*layer],
+                None => (0..capabilities.num_layers).collect(),
+            };
+            let mut slots = Vec::with_capacity(layers.len());
+            for layer in layers {
+                let metadata = client.get_layer_metadata(layer).await?;
+                slots.push(keymap::LayerName {
+                    layer,
+                    occupied: metadata.occupied,
+                    name: metadata.name.as_str().to_owned(),
+                });
+            }
+            println!("{}", keymap::render_layer_names(&slots));
         }
         KeymapCommand::Monitor { seconds } => {
             require_maintenance_mode(client).await?;

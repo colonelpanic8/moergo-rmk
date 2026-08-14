@@ -11,7 +11,7 @@ use rynk::rmk_types::combo::ComboDefinition;
 use rynk::rmk_types::fork::Fork;
 use rynk::rmk_types::morse::Morse;
 use rynk::rmk_types::protocol::rynk::{
-    BehaviorConfig as WireBehaviorConfig, BehaviorOptions, LightingBackgroundState,
+    BehaviorConfig as WireBehaviorConfig, BehaviorOptions, LayerMetadata, LightingBackgroundState,
     LightingExtendedConditionalSceneCell, LightingExtensionParam, LightingExtensionState,
     LightingLayerPolicy, LightingOutputMode, LightingSceneCell, MorseProfileEntry,
 };
@@ -78,6 +78,10 @@ pub struct RuntimeSnapshot {
     pub default_layer: u8,
     /// One entry per layer, each row-major over the 6x14 grid.
     pub layers: Vec<Vec<KeyAction>>,
+    /// Persistent per-slot occupancy and names. `undefined` means the source
+    /// this came from does not manage layer metadata, so names are left alone.
+    #[serde(default)]
+    pub layer_names: Option<Vec<LayerMetadata>>,
     pub lighting: Option<LightingSnapshot>,
     #[serde(default)]
     pub behaviors: BehaviorSnapshot,
