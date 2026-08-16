@@ -10,7 +10,8 @@ use rynk::rmk_types::combo::{Combo, ComboDefinition, MatrixPosition, PositionCom
 use rynk::rmk_types::morse::{Morse, MorseMode, MorseProfile, MORSE_PROFILE_NAME_MAX_LEN};
 use rynk::rmk_types::pointing::{
     CaretConfig as WireCaretConfig, CursorConfig as WireCursorConfig, DragConfig as WireDragConfig,
-    PointingMode, ScrollConfig as WireScrollConfig, SniperConfig as WireSniperConfig,
+    PointingMode, PressConfig as WirePressConfig, ScrollConfig as WireScrollConfig,
+    SniperConfig as WireSniperConfig,
 };
 use rynk::rmk_types::protocol::rynk::{
     BehaviorConfig as WireBehaviorConfig, BehaviorOptions as WireBehaviorOptions, LayerMetadata,
@@ -207,6 +208,18 @@ pub enum PointingModeConfig {
         toggled_by: u8,
         #[serde(default = "one")]
         latches: u8,
+    },
+    Press {
+        #[serde(default = "one")]
+        multiplier_x: u8,
+        #[serde(default = "one")]
+        multiplier_y: u8,
+        #[serde(default)]
+        invert_x: bool,
+        #[serde(default)]
+        invert_y: bool,
+        #[serde(default = "one")]
+        holds: u8,
     },
 }
 
@@ -1123,6 +1136,21 @@ impl PointingModeConfig {
                 toggled_by,
                 latches,
             }),
+            Self::Press {
+                multiplier_x,
+                multiplier_y,
+                invert_x,
+                invert_y,
+                holds,
+            } => PointingMode::Press(WirePressConfig {
+                cursor: WireCursorConfig {
+                    multiplier_x,
+                    multiplier_y,
+                    invert_x,
+                    invert_y,
+                },
+                holds,
+            }),
         }
     }
 
@@ -1155,6 +1183,13 @@ impl PointingModeConfig {
                 invert_y: config.cursor.invert_y,
                 toggled_by: config.toggled_by,
                 latches: config.latches,
+            },
+            PointingMode::Press(config) => Self::Press {
+                multiplier_x: config.cursor.multiplier_x,
+                multiplier_y: config.cursor.multiplier_y,
+                invert_x: config.cursor.invert_x,
+                invert_y: config.cursor.invert_y,
+                holds: config.holds,
             },
             PointingMode::Caret(config) => Self::Caret {
                 disable_x: config.disable_x,
