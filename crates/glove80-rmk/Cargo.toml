@@ -23,13 +23,13 @@ rmk = { path = "../../dependencies/rmk/rmk", default-features = false, features 
     "lighting",
     "adafruit_bl",
 ] }
-nrf-sdc = { git = "https://github.com/alexmoon/nrf-sdc", rev = "abe49d22ebfc85fae134eb082fbfddf752016a55", features = [
+nrf-sdc = { git = "https://github.com/colonelpanic8/nrf-sdc", rev = "202600e31f6b1c093e3d2afe32357da3b108b806", features = [
     "defmt",
     "peripheral",
     "central",
     "nrf52840",
 ] }
-nrf-mpsl = { git = "https://github.com/alexmoon/nrf-sdc", rev = "abe49d22ebfc85fae134eb082fbfddf752016a55", features = [
+nrf-mpsl = { git = "https://github.com/colonelpanic8/nrf-sdc", rev = "202600e31f6b1c093e3d2afe32357da3b108b806", features = [
     "defmt",
     "critical-section-impl",
     "nrf52840",

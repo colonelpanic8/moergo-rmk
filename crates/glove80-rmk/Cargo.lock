@@ -172,7 +172,7 @@ dependencies = [
  "embedded-io 0.7.1",
  "embedded-io-async 0.7.0",
  "futures-intrusive",
- "heapless 0.9.3",
+ "heapless 0.8.0",
  "serde",
 ]
 
@@ -1537,7 +1537,7 @@ dependencies = [
 [[package]]
 name = "nrf-mpsl"
 version = "0.3.0"
-source = "git+https://github.com/alexmoon/nrf-sdc?rev=abe49d22ebfc85fae134eb082fbfddf752016a55#abe49d22ebfc85fae134eb082fbfddf752016a55"
+source = "git+https://github.com/colonelpanic8/nrf-sdc?rev=202600e31f6b1c093e3d2afe32357da3b108b806#202600e31f6b1c093e3d2afe32357da3b108b806"
 dependencies = [
  "cfg-if",
  "cortex-m",
@@ -1554,7 +1554,7 @@ dependencies = [
 [[package]]
 name = "nrf-mpsl-sys"
 version = "0.2.1"
-source = "git+https://github.com/alexmoon/nrf-sdc?rev=abe49d22ebfc85fae134eb082fbfddf752016a55#abe49d22ebfc85fae134eb082fbfddf752016a55"
+source = "git+https://github.com/colonelpanic8/nrf-sdc?rev=202600e31f6b1c093e3d2afe32357da3b108b806#202600e31f6b1c093e3d2afe32357da3b108b806"
 dependencies = [
  "bindgen",
  "doxygen-rs",
@@ -1573,7 +1573,7 @@ dependencies = [
 [[package]]
 name = "nrf-sdc"
 version = "0.4.0"
-source = "git+https://github.com/alexmoon/nrf-sdc?rev=abe49d22ebfc85fae134eb082fbfddf752016a55#abe49d22ebfc85fae134eb082fbfddf752016a55"
+source = "git+https://github.com/colonelpanic8/nrf-sdc?rev=202600e31f6b1c093e3d2afe32357da3b108b806#202600e31f6b1c093e3d2afe32357da3b108b806"
 dependencies = [
  "bt-hci",
  "critical-section",
@@ -1590,7 +1590,7 @@ dependencies = [
 [[package]]
 name = "nrf-sdc-sys"
 version = "0.2.1"
-source = "git+https://github.com/alexmoon/nrf-sdc?rev=abe49d22ebfc85fae134eb082fbfddf752016a55#abe49d22ebfc85fae134eb082fbfddf752016a55"
+source = "git+https://github.com/colonelpanic8/nrf-sdc?rev=202600e31f6b1c093e3d2afe32357da3b108b806#202600e31f6b1c093e3d2afe32357da3b108b806"
 dependencies = [
  "bindgen",
  "doxygen-rs",
