@@ -5,10 +5,9 @@
 //! target itself.
 
 use anyhow::Result;
-use clap::{Subcommand, ValueEnum};
+use clap::Subcommand;
 use rynk::rmk_types::ble::BleState;
 use rynk::rmk_types::connection::{ConnectionStatus, ConnectionType, UsbState};
-use rynk::rmk_types::protocol::rynk::{SplitTransportForce, SplitTransportState};
 
 use crate::transport::Selector;
 
@@ -25,30 +24,6 @@ pub enum ConnectionCommand {
         #[command(subcommand)]
         command: NameCommand,
     },
-    /// Show the wired/BLE transport between the halves, or force one.
-    Split {
-        /// Force the split transport (volatile until the next force or
-        /// reboot); `auto` returns control to cable detect.
-        #[arg(long, value_enum)]
-        force: Option<SplitForceMode>,
-    },
-}
-
-#[derive(Clone, Copy, ValueEnum)]
-pub enum SplitForceMode {
-    Auto,
-    Wired,
-    Ble,
-}
-
-impl From<SplitForceMode> for SplitTransportForce {
-    fn from(mode: SplitForceMode) -> Self {
-        match mode {
-            SplitForceMode::Auto => SplitTransportForce::Auto,
-            SplitForceMode::Wired => SplitTransportForce::Wired,
-            SplitForceMode::Ble => SplitTransportForce::Ble,
-        }
-    }
 }
 
 #[derive(Subcommand)]
@@ -61,24 +36,6 @@ pub enum NameCommand {
 
 pub fn run(selector: &Selector, command: &ConnectionCommand) -> Result<()> {
     crate::rynk_client::run_connection(selector, command)
-}
-
-pub(crate) fn render_split(state: &SplitTransportState) -> String {
-    if !state.auto {
-        return "split transport: fixed (this board has no automatic wired/BLE policy)\n".into();
-    }
-    let force = match state.forced {
-        SplitTransportForce::Auto => "auto (following cable detect)",
-        SplitTransportForce::Wired => "wired",
-        SplitTransportForce::Ble => "ble",
-    };
-    format!(
-        "cable detected: {}\n\
-         force: {force}\n\
-         split transport: {}\n",
-        if state.cable_detected { "yes" } else { "no" },
-        if state.wired_active { "wired" } else { "ble" },
-    )
 }
 
 pub(crate) fn render(status: &ConnectionStatus) -> String {

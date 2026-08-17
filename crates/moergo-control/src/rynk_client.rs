@@ -162,7 +162,6 @@ async fn operate_connection(client: &Client, command: &ConnectionCommand) -> Res
             | ConnectionCommand::Name {
                 command: NameCommand::Set { .. }
             }
-            | ConnectionCommand::Split { force: Some(_) }
     ) {
         require_maintenance_mode(client).await?;
     }
@@ -204,19 +203,6 @@ async fn operate_connection(client: &Client, command: &ConnectionCommand) -> Res
             }
             client.set_ble_name(&name).await?;
             println!("{}", client.get_ble_name().await?.template);
-        }
-        ConnectionCommand::Split { force: None } => {
-            let state = client.get_split_transport().await?;
-            print!("{}", crate::connection::render_split(&state));
-        }
-        ConnectionCommand::Split { force: Some(mode) } => {
-            client.set_split_transport_force((*mode).into()).await?;
-            // A force that flips the transport tears the split session down
-            // and re-establishes it on the other link; let that settle so
-            // the echoed state shows where the halves landed.
-            tokio::time::sleep(Duration::from_millis(800)).await;
-            let state = client.get_split_transport().await?;
-            print!("{}", crate::connection::render_split(&state));
         }
     }
     Ok(())
