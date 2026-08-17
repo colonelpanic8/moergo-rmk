@@ -12,8 +12,8 @@
 //! file means.
 //!
 //! The format is MoErgo-specific, not generic Rynk. `moergo-config` carries
-//! the 6x14 matrix and the four physical holes at r0c5, r0c8, r5c5 and r5c8; a
-//! different Rynk board needs a different schema, not a different catalog.
+//! the Glove80 and Go60 matrices and their physical holes; a different Rynk
+//! board needs a different schema, not a different catalog.
 //!
 //! Native targets compile an empty crate. Build with
 //! `wasm-pack build --release --target web`.

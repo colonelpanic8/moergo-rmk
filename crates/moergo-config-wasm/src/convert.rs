@@ -51,12 +51,18 @@ pub fn snapshot_from_wire(
     snapshot: &RuntimeSnapshot,
     catalog: &ExtensionCatalog,
 ) -> anyhow::Result<model::Snapshot> {
+    let layer_size = usize::from(snapshot.rows) * usize::from(snapshot.cols);
+    if snapshot.rows == 0 || snapshot.cols == 0 {
+        anyhow::bail!("matrix dimensions must be non-zero");
+    }
     for (layer, actions) in snapshot.layers.iter().enumerate() {
-        if actions.len() != model::LAYER_SIZE {
+        if actions.len() != layer_size {
             anyhow::bail!(
-                "layer {layer} has {} keys, expected the Glove80's {}",
+                "layer {layer} has {} keys, expected {} for a {}x{} matrix",
                 actions.len(),
-                model::LAYER_SIZE
+                layer_size,
+                snapshot.rows,
+                snapshot.cols,
             );
         }
     }
@@ -69,8 +75,8 @@ pub fn snapshot_from_wire(
         .transpose()?;
 
     Ok(model::Snapshot {
-        rows: model::ROWS,
-        cols: model::COLS,
+        rows: snapshot.rows,
+        cols: snapshot.cols,
         bluetooth_name: snapshot.bluetooth_name.clone(),
         default_layer: snapshot.default_layer,
         layers,
@@ -183,6 +189,8 @@ pub fn snapshot_to_wire(
 
     Ok(RuntimeSnapshot {
         bluetooth_name: snapshot.bluetooth_name.clone(),
+        rows: snapshot.rows,
+        cols: snapshot.cols,
         default_layer: snapshot.default_layer,
         layers,
         layer_names: snapshot.layer_names.clone(),

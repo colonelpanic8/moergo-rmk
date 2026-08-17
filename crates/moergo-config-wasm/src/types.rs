@@ -75,8 +75,12 @@ pub struct RuntimeSnapshot {
     /// Persistent BLE advertising-name template, when supported.
     #[serde(default)]
     pub bluetooth_name: Option<String>,
+    /// Physical matrix row count carried by the source or connected board.
+    pub rows: u8,
+    /// Physical matrix column count carried by the source or connected board.
+    pub cols: u8,
     pub default_layer: u8,
-    /// One entry per layer, each row-major over the 6x14 grid.
+    /// One entry per layer, each row-major over the board matrix.
     pub layers: Vec<Vec<KeyAction>>,
     /// Persistent per-slot occupancy and names. `undefined` means the source
     /// this came from does not manage layer metadata, so names are left alone.
