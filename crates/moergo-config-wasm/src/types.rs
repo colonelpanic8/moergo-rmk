@@ -13,7 +13,7 @@ use rynk::rmk_types::morse::Morse;
 use rynk::rmk_types::protocol::rynk::{
     BehaviorConfig as WireBehaviorConfig, BehaviorOptions, LayerMetadata, LightingBackgroundState,
     LightingExtendedConditionalSceneCell, LightingExtensionParam, LightingExtensionState,
-    LightingLayerPolicy, LightingOutputMode, LightingSceneCell, MorseProfileEntry,
+    LightingLayerPolicy, LightingOutputMode, LightingSceneCell, MorseProfileEntry, PointingConfig,
 };
 use serde::{Deserialize, Serialize};
 use tsify::Tsify;
@@ -83,6 +83,8 @@ pub struct RuntimeSnapshot {
     #[serde(default)]
     pub layer_names: Option<Vec<LayerMetadata>>,
     pub lighting: Option<LightingSnapshot>,
+    #[serde(default)]
+    pub pointing: Option<PointingConfig>,
     #[serde(default)]
     pub behaviors: BehaviorSnapshot,
 }

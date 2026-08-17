@@ -107,7 +107,7 @@ pub fn snapshot_from_wire(
             macros: snapshot.behaviors.macros.clone(),
             forks: snapshot.behaviors.forks.clone(),
         },
-        pointing: None,
+        pointing: snapshot.pointing,
     })
 }
 
@@ -187,6 +187,7 @@ pub fn snapshot_to_wire(
         layers,
         layer_names: snapshot.layer_names.clone(),
         lighting,
+        pointing: snapshot.pointing,
         behaviors: BehaviorSnapshot {
             config: snapshot.behaviors.config,
             options: snapshot.behaviors.options,
