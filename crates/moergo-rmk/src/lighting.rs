@@ -83,11 +83,21 @@ const MAINTENANCE_LED: LedSlot = LedSlot(crate::BOARD_MAINTENANCE_LED);
 const MAINTENANCE_ENABLED: Rgb8 = Rgb8::new(0, 128, 0);
 const MAINTENANCE_DISABLED: Rgb8 = Rgb8::new(128, 0, 0);
 
+// Two readings on one key: red versus anything else says whether the cable
+// path is switched off, and green versus blue says which link is carrying the
+// halves right now.
 const SPLIT_TRANSPORT_LED: LedSlot = LedSlot(crate::BOARD_SPLIT_TRANSPORT_LED);
-const SPLIT_FORCED_BLE: Rgb8 = Rgb8::new(0, 80, 255);
+/// Forced BLE, so the cable path is disabled — the same red the maintenance
+/// lock and the effects toggle use for a restricted control.
+const SPLIT_FORCED_BLE: Rgb8 = MAINTENANCE_DISABLED;
+/// Automatic and running on the wired link, which is the nominal state, so it
+/// takes the green those same toggles use for permitted.
+const SPLIT_AUTO_WIRED: Rgb8 = MAINTENANCE_ENABLED;
+/// Automatic but fallen back to BLE. Blue is BLE everywhere else on the board.
+const SPLIT_AUTO_BLE: Rgb8 = Rgb8::new(0, 64, 160);
+/// Pinned to the wired link, which only a host command can do. No other Magic
+/// control claims magenta.
 const SPLIT_FORCED_WIRED: Rgb8 = Rgb8::new(160, 0, 160);
-const SPLIT_AUTO_WIRED: Rgb8 = Rgb8::new(0, 192, 32);
-const SPLIT_AUTO_BLE: Rgb8 = Rgb8::new(160, 160, 0);
 
 fn split_transport_color() -> Rgb8 {
     use rmk::split::selector;
