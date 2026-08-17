@@ -11,6 +11,11 @@ pub const BOARD_LEDS_PER_HALF: usize = 40;
 pub const BOARD_LEDS_PER_HALF: usize = 30;
 
 #[cfg(feature = "glove80")]
+pub const BOARD_SCENE_CAPACITY: usize = 100;
+#[cfg(feature = "go60")]
+pub const BOARD_SCENE_CAPACITY: usize = 80;
+
+#[cfg(feature = "glove80")]
 pub const BOARD_CHANNEL_CEILING: u8 = 230;
 #[cfg(feature = "go60")]
 pub const BOARD_CHANNEL_CEILING: u8 = 102;

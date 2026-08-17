@@ -5,6 +5,7 @@ mod device_data;
 mod trackpad;
 
 pub const BOARD_LEDS_PER_HALF: usize = 30;
+pub const BOARD_SCENE_CAPACITY: usize = 80;
 pub const BOARD_CHANNEL_CEILING: u8 = 102;
 pub const BOARD_MAINTENANCE_LED: u16 = 8;
 

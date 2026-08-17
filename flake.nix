@@ -30,6 +30,9 @@
             pkgs.nixpkgs-fmt
             pkgs.pkg-config
             pkgs.dbus.dev
+            pkgs.curl
+            pkgs.jq
+            pkgs.unzip
             libclang
           ];
 

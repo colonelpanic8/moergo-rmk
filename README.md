@@ -80,7 +80,18 @@ manifest under `dist/`. Packaging validates each half's UF2 family ID and the
 application flash range `0x00026000..0x000dc000`.
 
 `just go60-firmware` applies the same validation to the Go60 build and writes
-its independent bundle under `dist/go60/`.
+its independent bundle under `dist/go60/`. It stages tracked inputs at fixed
+build paths and seeds RMK's storage build hash from the source commit, RMK
+commit, and platform profile, so identical inputs reproduce identical UF2s.
+
+Release manifests use schema 2 and include canonical configuration and
+platform-profile SHA-256 hashes. The platform profile excludes compiled
+keymap/behavior defaults and resolves lighting wake layers by name, so a
+downstream personal-default build can prove that its hardware, capacities,
+event queues, split transport, storage, and lighting topology still match the
+stock build. Compare two files with `cargo run -p xtask --
+verify-config-profile STOCK CONFIGURED`. Set `MOERGO_DIST_DIR` to package a
+comparison build without replacing the normal `dist/` bundle.
 
 Downstream configuration repositories may set `MOERGO_CONFIG_GIT_COMMIT` and
 `MOERGO_CONFIG_GIT_DIRTY` to include their source identity in firmware build

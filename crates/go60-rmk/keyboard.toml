@@ -15,8 +15,11 @@ manufacturer = "MoErgo"
 chip = "nrf52840"
 
 [rmk]
+ble_profiles_num = 3
 split_central_max_latency_powered = 0
 split_central_max_latency_battery = 1
+morse_max_num = 64
+combo_max_num = 32
 
 [layout]
 rows = 5
@@ -60,7 +63,7 @@ thumb_2 = { x = -1.0, y = -0.75 }
 thumb_3 = { x = -2.0, y = -0.75 }
 
 [keymap]
-layers = 5
+layers = 16
 
 [[keymap.layer]]
 name = "Base"
@@ -207,6 +210,9 @@ col_pins = ["P0_14", "P0_13", "P0_16", "P0_15", "P0_17", "P0_20", "P0_24"]
 
 [lighting]
 topology_revision = 1
+
+[lighting.controls]
+wake_layers = [3]
 
 [[lighting.zone]]
 id = 1

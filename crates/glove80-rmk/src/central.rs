@@ -2,6 +2,7 @@
 #![no_std]
 
 pub const BOARD_LEDS_PER_HALF: usize = 40;
+pub const BOARD_SCENE_CAPACITY: usize = 100;
 pub const BOARD_CHANNEL_CEILING: u8 = 230;
 pub const BOARD_MAINTENANCE_LED: u16 = 12;
 

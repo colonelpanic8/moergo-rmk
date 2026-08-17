@@ -69,9 +69,11 @@ pub const OVERLAY_CAPACITY: usize = 64;
 /// replace transaction faulted and reset the board. 112 restored the RAM
 /// budget the board shipped with before those predicates; the bonded-slot
 /// and usb-connected predicates widened the cell again, so 100 gives back
-/// that growth with margin. `config/glove80.toml` currently carries 95
-/// scene cells and 47 conditional rules.
-pub const SCENE_CAPACITY: usize = 100;
+/// that growth with margin. `config/glove80.toml` currently carries 95 scene
+/// cells and 47 conditional rules, while `config/go60.toml` carries 73 and 52.
+/// Glove80 retains the 100-cell budget; Go60 uses 80 because its larger
+/// firmware otherwise faults while opening an atomic table replacement.
+pub const SCENE_CAPACITY: usize = crate::BOARD_SCENE_CAPACITY;
 pub const COMMAND_CAPACITY: usize = 4;
 
 /// Number of simultaneous key hits each typing-reactive effect can remember.

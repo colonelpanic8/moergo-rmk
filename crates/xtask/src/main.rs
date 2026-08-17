@@ -2,7 +2,7 @@ use std::{
     env,
     ffi::OsStr,
     fmt::Write as _,
-    fs,
+    fs::{self, OpenOptions},
     io::{self, Write as _},
     path::{Component, Path, PathBuf},
     process::{Command, Output},
@@ -12,6 +12,8 @@ use serde_json::json;
 use sha2::{Digest, Sha256};
 use walkdir::{DirEntry, WalkDir};
 
+mod config_profile;
+
 const UF2_MAGIC0: u32 = 0x0a32_4655;
 const UF2_MAGIC1: u32 = 0x9e5d_5157;
 const UF2_MAGIC_END: u32 = 0x0ab1_6f30;
@@ -19,6 +21,10 @@ const UF2_FLAG_FAMILY_ID: u32 = 0x0000_2000;
 const UF2_PAYLOAD_SIZE: usize = 256;
 const APPLICATION_START: u32 = 0x0002_6000;
 const APPLICATION_END: u32 = 0x000d_c000;
+const GO60_BUILD_ROOT: &str = "/tmp/moergo-rmk-go60-source";
+const GO60_BUILD_CONFIG_DIR: &str = "/tmp/moergo-rmk-go60-config";
+const GO60_CARGO_HOME: &str = "/tmp/moergo-rmk-go60-cargo";
+const GO60_BUILD_LOCK: &str = "/tmp/moergo-rmk-go60-build.lock";
 
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
@@ -36,6 +42,17 @@ fn run() -> Result<()> {
         Some("check") if args.next().is_none() => check(&root),
         Some("dist") if args.next().is_none() => dist(&root),
         Some("dist-go60") if args.next().is_none() => dist_go60(&root),
+        Some("verify-config-profile") => {
+            let stock = args.next().ok_or("verify-config-profile requires STOCK CONFIGURED")?;
+            let configured = args.next().ok_or("verify-config-profile requires STOCK CONFIGURED")?;
+            if args.next().is_some() {
+                return Err("verify-config-profile accepts exactly two files".into());
+            }
+            let digests = config_profile::verify(&root.join(stock), &root.join(configured))?;
+            println!("configuration sha256: {}", digests.configuration);
+            println!("platform profile sha256: {}", digests.platform_profile);
+            Ok(())
+        }
         Some("inspect-uf2") => {
             let path = args.next().ok_or("inspect-uf2 requires a file")?;
             if args.next().is_some() {
@@ -52,7 +69,7 @@ fn run() -> Result<()> {
             );
             Ok(())
         }
-        _ => Err("usage: cargo run -p xtask -- <check|dist|dist-go60|inspect-uf2 FILE>".into()),
+        _ => Err("usage: cargo run -p xtask -- <check|dist|dist-go60|verify-config-profile STOCK CONFIGURED|inspect-uf2 FILE>".into()),
     }
 }
 
@@ -214,17 +231,7 @@ fn dist(root: &Path) -> Result<()> {
     )?;
     let rust_toolchain = toml_value(root.join("rust-toolchain.toml"), &["toolchain", "channel"])?;
     let source_commit = git(root, &["rev-parse", "HEAD"])?;
-    let rmk_version = git(
-        root,
-        &[
-            "-C",
-            "dependencies/rmk",
-            "describe",
-            "--tags",
-            "--always",
-            "--dirty",
-        ],
-    )?;
+    let rmk_version = deterministic_submodule_identity(root, &rmk_commit)?;
     let config_commit = env::var("MOERGO_CONFIG_GIT_COMMIT")
         .or_else(|_| env::var("GLOVE80_CONFIG_GIT_COMMIT"))
         .unwrap_or_else(|_| "standalone".to_owned());
@@ -233,17 +240,25 @@ fn dist(root: &Path) -> Result<()> {
         .unwrap_or_else(|_| "false".to_owned());
 
     let firmware_dir = root.join("crates/glove80-rmk");
+    let config_path = effective_config_path(&firmware_dir);
+    let config_digests = config_profile::digests(&config_path)?;
+    let build_hash_seed = firmware_build_hash_seed(&source_commit, &rmk_commit, &config_digests);
+    let rustflags = reproducible_rustflags(root, &config_path);
     for binary in ["glove80_lh", "glove80_rh"] {
         run_command(
             &firmware_dir,
             "cargo",
             &["build", "--release", "--bin", binary],
-            &[("MOERGO_RMK_GIT_VERSION", &rmk_version)],
+            &[
+                ("MOERGO_RMK_GIT_VERSION", &rmk_version),
+                ("RMK_BUILD_HASH_SEED", &build_hash_seed),
+                ("RUSTFLAGS", &rustflags),
+            ],
         )?;
     }
 
     let target = firmware_dir.join("target/thumbv7em-none-eabihf/release");
-    let dist = root.join("dist");
+    let dist = output_dir(root, "dist");
     fs::create_dir_all(&dist)?;
     let halves = [
         Half::new("left", "lh", "glove80_lh", 0x9807_b007),
@@ -271,6 +286,7 @@ fn dist(root: &Path) -> Result<()> {
         &rmk_commit,
         &rmk_version,
         &rust_toolchain,
+        &config_digests,
         &halves,
     )
 }
@@ -293,17 +309,7 @@ fn dist_go60(root: &Path) -> Result<()> {
     )?;
     let rust_toolchain = toml_value(root.join("rust-toolchain.toml"), &["toolchain", "channel"])?;
     let source_commit = git(root, &["rev-parse", "HEAD"])?;
-    let rmk_version = git(
-        root,
-        &[
-            "-C",
-            "dependencies/rmk",
-            "describe",
-            "--tags",
-            "--always",
-            "--dirty",
-        ],
-    )?;
+    let rmk_version = deterministic_submodule_identity(root, &rmk_commit)?;
     let config_commit = env::var("MOERGO_CONFIG_GIT_COMMIT")
         .or_else(|_| env::var("GO60_CONFIG_GIT_COMMIT"))
         .unwrap_or_else(|_| "standalone".to_owned());
@@ -313,21 +319,31 @@ fn dist_go60(root: &Path) -> Result<()> {
     let source_dirty = if dirty { "true" } else { "false" };
 
     let firmware_dir = root.join("crates/go60-rmk");
+    let config_path = effective_config_path(&firmware_dir);
+    let config_digests = config_profile::digests(&config_path)?;
+    let build_hash_seed = firmware_build_hash_seed(&source_commit, &rmk_commit, &config_digests);
+    let build = CanonicalGo60Build::prepare(root, &config_path)?;
+    let build_firmware_dir = build.root.join("crates/go60-rmk");
+    let rustflags = reproducible_rustflags(&build.root, &build.config_path);
     for binary in ["go60_lh", "go60_rh"] {
         run_command(
-            &firmware_dir,
+            &build_firmware_dir,
             "cargo",
             &["build", "--release", "--bin", binary],
             &[
                 ("GO60_GIT_COMMIT", &source_commit),
                 ("GO60_GIT_DIRTY", source_dirty),
                 ("MOERGO_RMK_GIT_VERSION", &rmk_version),
+                ("RMK_BUILD_HASH_SEED", &build_hash_seed),
+                ("KEYBOARD_TOML_PATH", build.config_path_str()),
+                ("CARGO_HOME", GO60_CARGO_HOME),
+                ("RUSTFLAGS", &rustflags),
             ],
         )?;
     }
 
-    let target = firmware_dir.join("target/thumbv7em-none-eabihf/release");
-    let dist = root.join("dist/go60");
+    let target = build_firmware_dir.join("target/thumbv7em-none-eabihf/release");
+    let dist = output_dir(root, "dist/go60");
     fs::create_dir_all(&dist)?;
     let halves = [
         Half::new("left", "lh", "go60_lh", 0x9809_b007),
@@ -355,6 +371,7 @@ fn dist_go60(root: &Path) -> Result<()> {
         &rmk_commit,
         &rmk_version,
         &rust_toolchain,
+        &config_digests,
         &halves,
     )
 }
@@ -372,6 +389,210 @@ fn toml_value(path: PathBuf, keys: &[&str]) -> Result<String> {
         .as_str()
         .map(str::to_owned)
         .ok_or_else(|| format!("{} {} is not a string", path.display(), keys.join(".")).into())
+}
+
+fn effective_config_path(firmware_dir: &Path) -> PathBuf {
+    env::var_os("KEYBOARD_TOML_PATH")
+        .map(PathBuf::from)
+        .map(|path| {
+            if path.is_absolute() {
+                path
+            } else {
+                firmware_dir.join(path)
+            }
+        })
+        .unwrap_or_else(|| firmware_dir.join("keyboard.toml"))
+}
+
+fn output_dir(root: &Path, default: &str) -> PathBuf {
+    env::var_os("MOERGO_DIST_DIR")
+        .map(PathBuf::from)
+        .map(|path| {
+            if path.is_absolute() {
+                path
+            } else {
+                root.join(path)
+            }
+        })
+        .unwrap_or_else(|| root.join(default))
+}
+
+fn firmware_build_hash_seed(
+    source_commit: &str,
+    rmk_commit: &str,
+    config_digests: &config_profile::Digests,
+) -> String {
+    format!(
+        "moergo-rmk:{source_commit}:rmk:{rmk_commit}:platform:{}",
+        config_digests.platform_profile
+    )
+}
+
+struct CanonicalGo60Build {
+    root: PathBuf,
+    config_dir: PathBuf,
+    config_path: PathBuf,
+    config_path_text: String,
+    lock_path: PathBuf,
+}
+
+impl CanonicalGo60Build {
+    fn prepare(root: &Path, config_path: &Path) -> Result<Self> {
+        let lock_path = PathBuf::from(GO60_BUILD_LOCK);
+        let mut lock = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&lock_path)
+            .map_err(|error| {
+                format!(
+                    "cannot acquire the canonical Go60 build lock {}: {error}",
+                    lock_path.display()
+                )
+            })?;
+        writeln!(lock, "{}", std::process::id())?;
+
+        let build = Self {
+            root: PathBuf::from(GO60_BUILD_ROOT),
+            config_dir: PathBuf::from(GO60_BUILD_CONFIG_DIR),
+            config_path: PathBuf::from(GO60_BUILD_CONFIG_DIR).join("keyboard.toml"),
+            config_path_text: format!("{GO60_BUILD_CONFIG_DIR}/keyboard.toml"),
+            lock_path,
+        };
+        build.reset()?;
+        copy_tracked_tree(root, &build.root)?;
+        fs::create_dir_all(&build.config_dir)?;
+        fs::copy(config_path, &build.config_path)?;
+        fs::create_dir_all(GO60_CARGO_HOME)?;
+        Ok(build)
+    }
+
+    fn config_path_str(&self) -> &str {
+        &self.config_path_text
+    }
+
+    fn reset(&self) -> Result<()> {
+        for path in [&self.root, &self.config_dir] {
+            if path.exists() {
+                fs::remove_dir_all(path)?;
+            }
+        }
+        Ok(())
+    }
+}
+
+impl Drop for CanonicalGo60Build {
+    fn drop(&mut self) {
+        let _ = self.reset();
+        let _ = fs::remove_file(&self.lock_path);
+    }
+}
+
+fn copy_tracked_tree(root: &Path, destination: &Path) -> Result<()> {
+    fs::create_dir_all(destination)?;
+    let files = command_output(
+        root,
+        "git",
+        &["ls-files", "--recurse-submodules", "-z"],
+        &[],
+    )?;
+    for encoded in files
+        .stdout
+        .split(|byte| *byte == 0)
+        .filter(|path| !path.is_empty())
+    {
+        let relative = std::str::from_utf8(encoded)?;
+        let relative = Path::new(relative);
+        if relative.is_absolute()
+            || relative
+                .components()
+                .any(|component| matches!(component, Component::ParentDir))
+        {
+            return Err(format!(
+                "git reported an unsafe tracked path: {}",
+                relative.display()
+            )
+            .into());
+        }
+        let source = root.join(relative);
+        let target = destination.join(relative);
+        if let Some(parent) = target.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        let metadata = fs::symlink_metadata(&source)?;
+        if metadata.file_type().is_symlink() {
+            copy_symlink(&source, &target)?;
+        } else if metadata.is_file() {
+            fs::copy(&source, &target)?;
+            fs::set_permissions(&target, metadata.permissions())?;
+        } else if metadata.is_dir() {
+            // `git ls-files --recurse-submodules` reports the directory entry
+            // for an uninitialized nested submodule. Its contents are absent
+            // by definition, and Cargo will report a useful error if needed.
+            continue;
+        } else {
+            return Err(format!(
+                "tracked path is not a file or symlink: {}",
+                source.display()
+            )
+            .into());
+        }
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn copy_symlink(source: &Path, target: &Path) -> Result<()> {
+    std::os::unix::fs::symlink(fs::read_link(source)?, target)?;
+    Ok(())
+}
+
+#[cfg(windows)]
+fn copy_symlink(source: &Path, target: &Path) -> Result<()> {
+    if source.is_dir() {
+        std::os::windows::fs::symlink_dir(fs::read_link(source)?, target)?;
+    } else {
+        std::os::windows::fs::symlink_file(fs::read_link(source)?, target)?;
+    }
+    Ok(())
+}
+
+fn reproducible_rustflags(root: &Path, config_path: &Path) -> String {
+    let mut mappings = vec![(root.to_path_buf(), "/source/moergo-rmk")];
+    let cargo_home = env::var_os("CARGO_HOME").map(PathBuf::from).or_else(|| {
+        env::var_os("HOME")
+            .map(PathBuf::from)
+            .map(|home| home.join(".cargo"))
+    });
+    if let Some(cargo_home) = cargo_home {
+        mappings.push((cargo_home, "/cargo"));
+    }
+    if !config_path.starts_with(root) {
+        if let Some(config_dir) = config_path.parent() {
+            mappings.push((config_dir.to_path_buf(), "/source/config"));
+        }
+    }
+
+    let inherited = env::var("RUSTFLAGS").unwrap_or_default();
+    mappings
+        .into_iter()
+        .fold(inherited, |mut flags, (from, to)| {
+            if !flags.is_empty() {
+                flags.push(' ');
+            }
+            write!(flags, "--remap-path-prefix={}={to}", from.display()).unwrap();
+            flags
+        })
+}
+
+fn deterministic_submodule_identity(root: &Path, commit: &str) -> Result<String> {
+    let dirty = !git(root, &["-C", "dependencies/rmk", "status", "--porcelain"])?.is_empty();
+    Ok(format!(
+        "{}{}",
+        commit
+            .get(..8)
+            .ok_or("RMK commit is shorter than eight characters")?,
+        if dirty { "-dirty" } else { "" }
+    ))
 }
 
 #[cfg(unix)]
@@ -590,6 +811,7 @@ fn package_release(
     rmk_commit: &str,
     rmk_version: &str,
     rust_toolchain: &str,
+    config_digests: &config_profile::Digests,
     halves: &[Half],
 ) -> Result<()> {
     let mut artifacts = Vec::new();
@@ -634,13 +856,18 @@ fn package_release(
         json!({ "commit": config_commit, "dirty": config_dirty })
     };
     let manifest = json!({
-        "schemaVersion": 1,
+        "schemaVersion": 2,
         "project": project,
         "version": version,
         "source": { "commit": source_commit, "dirty": dirty },
         "configuration": configuration,
         "rmk": { "commit": rmk_commit, "version": rmk_version },
         "rustToolchain": rust_toolchain,
+        "configurationHashes": {
+            "schemaVersion": config_profile::SCHEMA_VERSION,
+            "canonical": config_digests.configuration,
+            "platformProfile": config_digests.platform_profile,
+        },
         "applicationRange": { "start": hex(APPLICATION_START), "end": hex(APPLICATION_END) },
         "artifacts": artifacts,
     });
