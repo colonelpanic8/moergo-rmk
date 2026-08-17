@@ -31,6 +31,10 @@ use rmk_palettefx::rmk_lighting::{
     HitQueue, MAX_INITIAL_PARAMS, PaletteFxConfig, PaletteFxSource, TopologyLayout,
 };
 
+mod lighting_output;
+
+use lighting_output::{frame_visible, limit_channel};
+
 /// Board-wide lighting topology for both binaries. `#[rmk_central]` emits
 /// `crate::LIGHTING_TOPOLOGY` for the central, but the peripheral macro only
 /// emits renderer configuration; the standalone macro reads the same
@@ -243,10 +247,6 @@ impl BatteryStatusProvider for BoardBatteryProvider {
 /// user-controlled transform and protocol path. Scale rather than clamp so
 /// RMK's global brightness has no dead zone and RGB ratios remain intact.
 const CHANNEL_CEILING: u8 = crate::BOARD_CHANNEL_CEILING;
-
-const fn limit_channel(channel: u8) -> u8 {
-    ((channel as u16 * CHANNEL_CEILING as u16 + u8::MAX as u16 / 2) / u8::MAX as u16) as u8
-}
 const ONE_FRAME: u8 = 0x70;
 const ZERO_FRAME: u8 = 0x40;
 const RESET_BYTES: usize = 48;
@@ -281,7 +281,7 @@ impl Ws2812Chain {
         let mut encoded = 0;
         for pixel in frame {
             for channel in [pixel.g, pixel.r, pixel.b] {
-                let channel = limit_channel(channel);
+                let channel = limit_channel(channel, CHANNEL_CEILING);
                 for bit in (0..8).rev() {
                     self.buf[encoded] = if channel & (1 << bit) == 0 {
                         ZERO_FRAME
@@ -354,6 +354,15 @@ fn set_chain_frame_visible(visible: bool) {
     });
 }
 
+fn chain_needs_dark_latch() -> bool {
+    CHAIN_POWER.lock(|state| {
+        state
+            .borrow()
+            .as_ref()
+            .is_some_and(|state| state.powered_at.is_some() && state.frame_visible)
+    })
+}
+
 fn power_down_chain() {
     CHAIN_POWER.lock(|state| {
         let mut state = state.borrow_mut();
@@ -393,7 +402,14 @@ impl LightingHardware {
     }
 
     pub(crate) async fn write(&mut self, frame: &[Rgb8; LEDS_PER_HALF]) -> Result<(), spim::Error> {
-        let visible = frame.iter().any(|pixel| *pixel != Rgb8::BLACK);
+        let visible = frame_visible(frame, CHANNEL_CEILING);
+        if !visible
+            && chain_needs_dark_latch()
+            && let Err(error) = self.chain.write(frame).await
+        {
+            power_down_chain();
+            return Err(error);
+        }
         set_chain_frame_visible(visible);
         if !wait_for_chain_power().await {
             return Ok(());
