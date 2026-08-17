@@ -83,6 +83,22 @@ const MAINTENANCE_LED: LedSlot = LedSlot(crate::BOARD_MAINTENANCE_LED);
 const MAINTENANCE_ENABLED: Rgb8 = Rgb8::new(0, 128, 0);
 const MAINTENANCE_DISABLED: Rgb8 = Rgb8::new(128, 0, 0);
 
+const SPLIT_TRANSPORT_LED: LedSlot = LedSlot(crate::BOARD_SPLIT_TRANSPORT_LED);
+const SPLIT_FORCED_BLE: Rgb8 = Rgb8::new(0, 80, 255);
+const SPLIT_FORCED_WIRED: Rgb8 = Rgb8::new(160, 0, 160);
+const SPLIT_AUTO_WIRED: Rgb8 = Rgb8::new(0, 192, 32);
+const SPLIT_AUTO_BLE: Rgb8 = Rgb8::new(160, 160, 0);
+
+fn split_transport_color() -> Rgb8 {
+    use rmk::split::selector;
+    match (selector::forced_mode(), selector::wired_selected()) {
+        (selector::FORCE_BLE, _) => SPLIT_FORCED_BLE,
+        (selector::FORCE_WIRED, _) => SPLIT_FORCED_WIRED,
+        (_, true) => SPLIT_AUTO_WIRED,
+        (_, false) => SPLIT_AUTO_BLE,
+    }
+}
+
 pub struct BoardStatus {
     compiled: ConditionalScenes<'static, BuiltinEffect, BoardBatteryProvider>,
 }
@@ -97,22 +113,35 @@ impl BoardStatus {
     fn maintenance_visible(input: &RenderInput<'_, LightingContext>) -> bool {
         input.context.layers.is_active(MAGIC_LAYER)
     }
+
+    fn split_transport_visible(input: &RenderInput<'_, LightingContext>) -> bool {
+        input.context.layers.is_active(MAGIC_LAYER) && rmk::split::selector::auto_enabled()
+    }
 }
 
 impl LightingSource<Rgb8, LightingContext> for BoardStatus {
     fn len(&self, input: &RenderInput<'_, LightingContext>) -> usize {
-        self.compiled.len(input) + usize::from(Self::maintenance_visible(input))
+        self.compiled.len(input)
+            + usize::from(Self::maintenance_visible(input))
+            + usize::from(Self::split_transport_visible(input))
     }
 
     fn slot(&self, index: usize, input: &RenderInput<'_, LightingContext>) -> LedSlot {
         let compiled_len = self.compiled.len(input);
         if index < compiled_len {
-            self.compiled.slot(index, input)
-        } else if index == compiled_len && Self::maintenance_visible(input) {
-            MAINTENANCE_LED
-        } else {
-            panic!("LightingSource index must be below len")
+            return self.compiled.slot(index, input);
         }
+        let mut extra = index - compiled_len;
+        if Self::maintenance_visible(input) {
+            if extra == 0 {
+                return MAINTENANCE_LED;
+            }
+            extra -= 1;
+        }
+        if Self::split_transport_visible(input) && extra == 0 {
+            return SPLIT_TRANSPORT_LED;
+        }
+        panic!("LightingSource index must be below len")
     }
 
     fn contribution(
@@ -122,17 +151,26 @@ impl LightingSource<Rgb8, LightingContext> for BoardStatus {
     ) -> Contribution<Rgb8> {
         let compiled_len = self.compiled.len(input);
         if index < compiled_len {
-            self.compiled.contribution(index, input)
-        } else if index == compiled_len && Self::maintenance_visible(input) {
-            let color = if rmk::state::maintenance_mode_enabled() {
-                MAINTENANCE_ENABLED
-            } else {
-                MAINTENANCE_DISABLED
-            };
-            Contribution::Opaque(BuiltinEffect::solid(color).sample(input.now_ms))
-        } else {
-            panic!("LightingSource index must be below len")
+            return self.compiled.contribution(index, input);
         }
+        let mut extra = index - compiled_len;
+        if Self::maintenance_visible(input) {
+            if extra == 0 {
+                let color = if rmk::state::maintenance_mode_enabled() {
+                    MAINTENANCE_ENABLED
+                } else {
+                    MAINTENANCE_DISABLED
+                };
+                return Contribution::Opaque(BuiltinEffect::solid(color).sample(input.now_ms));
+            }
+            extra -= 1;
+        }
+        if Self::split_transport_visible(input) && extra == 0 {
+            return Contribution::Opaque(
+                BuiltinEffect::solid(split_transport_color()).sample(input.now_ms),
+            );
+        }
+        panic!("LightingSource index must be below len")
     }
 }
 

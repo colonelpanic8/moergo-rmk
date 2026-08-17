@@ -768,6 +768,27 @@ impl Runnable for CentralReplication {
     }
 }
 
+/// Re-renders the board status when the split-transport selection moves, so
+/// the Magic-layer indicator tracks cable edges and forces without polling.
+pub struct SplitTransportLightingNudge;
+
+impl Runnable for SplitTransportLightingNudge {
+    async fn run(&mut self) -> ! {
+        use rmk::split::selector;
+        if !selector::auto_enabled() {
+            core::future::pending::<()>().await;
+        }
+        loop {
+            if selector::wired_selected() {
+                selector::wait_wireless_selected().await;
+            } else {
+                selector::wait_wired_selected().await;
+            }
+            crate::lighting::CORE_MAILBOX.snapshot_changed();
+        }
+    }
+}
+
 pub struct RemoteBootDispatcher;
 
 impl Runnable for RemoteBootDispatcher {
