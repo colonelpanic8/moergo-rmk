@@ -998,22 +998,53 @@ impl PeripheralReplication {
     }
 }
 
+/// True on boards whose split transport is runtime-selected by cable detect.
+/// Without an automatic policy both selector predicates hold at once, and a
+/// transport announcement would carry no information.
+fn auto_split_enabled() -> bool {
+    !(rmk::split::selector::wired_selected() && rmk::split::selector::wireless_selected())
+}
+
+/// Resolves when the peripheral should (re)announce its transport: promptly
+/// while an announcement is pending a free queue slot, otherwise on the next
+/// selector edge. Boards without an automatic policy never announce.
+async fn transport_announce_due(pending: bool, wired: bool) {
+    if pending {
+        Timer::after_millis(250).await;
+        return;
+    }
+    if !auto_split_enabled() {
+        core::future::pending::<()>().await;
+    }
+    if wired {
+        rmk::split::selector::wait_wireless_selected().await;
+    } else {
+        rmk::split::selector::wait_wired_selected().await;
+    }
+}
+
 impl Runnable for PeripheralReplication {
     async fn run(&mut self) -> ! {
         let mut link = rmk::split_app::SPLIT_APP_LINK
             .receiver()
             .expect("lighting replication owns one split-link receiver");
         let mut heartbeat_at = embassy_time::Instant::now() + ATTESTATION_INTERVAL;
+        let mut announce_transport = auto_split_enabled();
         loop {
-            match embassy_futures::select::select3(
+            let wired = rmk::split::selector::wired_selected();
+            match embassy_futures::select::select4(
                 link.changed(),
                 rmk::split_app::SPLIT_APP_RX.receive(),
                 Timer::at(heartbeat_at),
+                transport_announce_due(announce_transport, wired),
             )
             .await
             {
-                embassy_futures::select::Either3::First(up) => {
+                embassy_futures::select::Either4::First(up) => {
                     self.stage.reset();
+                    if up {
+                        announce_transport = auto_split_enabled();
+                    }
                     // Drain the inbox only when the link went down. This half
                     // marks the link up on the first *inbound* message, so on
                     // the up edge the inbox already holds the head of the
@@ -1027,12 +1058,23 @@ impl Runnable for PeripheralReplication {
                         while rmk::split_app::SPLIT_APP_RX.try_receive().is_ok() {}
                     }
                 }
-                embassy_futures::select::Either3::Second(message) => self.process(message).await,
-                embassy_futures::select::Either3::Third(()) => {
+                embassy_futures::select::Either4::Second(message) => self.process(message).await,
+                embassy_futures::select::Either4::Third(()) => {
                     heartbeat_at += ATTESTATION_INTERVAL;
                     if rmk::split_app::SPLIT_APP_LINK.try_get() == Some(true) {
                         let _ = try_send_attestation(0);
+                        // Periodic re-announcement heals a transport report
+                        // lost to a saturated diagnostic queue.
+                        announce_transport = auto_split_enabled();
                     }
+                }
+                embassy_futures::select::Either4::Fourth(()) => {
+                    let wired = rmk::split::selector::wired_selected();
+                    announce_transport = rmk::split_app::SPLIT_APP_LINK.try_get() == Some(true)
+                        && !try_send_diagnostic(crate::split_lighting::Message::TransportStatus {
+                            auto: true,
+                            wired,
+                        });
                 }
             }
         }

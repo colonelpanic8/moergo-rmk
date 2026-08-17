@@ -87,6 +87,22 @@ static OBSERVABILITY_CACHE: BlockingMutex<rmk::RawMutex, Cell<ObservabilityCache
         last_refresh_requested_at: None,
     }));
 
+/// The peripheral's last announced split-transport selection. `None` until
+/// the peripheral reports over the current split session; cleared on every
+/// link edge so a stale answer never outlives the session that produced it.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PeripheralTransport {
+    pub auto: bool,
+    pub wired: bool,
+}
+
+static PERIPHERAL_TRANSPORT: BlockingMutex<rmk::RawMutex, Cell<Option<PeripheralTransport>>> =
+    BlockingMutex::new(Cell::new(None));
+
+pub fn peripheral_transport() -> Option<PeripheralTransport> {
+    PERIPHERAL_TRANSPORT.lock(Cell::get)
+}
+
 pub struct BoardReplicationStatus;
 
 static REPLICATION_STATUS: BoardReplicationStatus = BoardReplicationStatus;
@@ -626,6 +642,7 @@ impl Runnable for CentralReplication {
                 Either4::First(up) => {
                     link_up = up;
                     awaiting_ack = None;
+                    PERIPHERAL_TRANSPORT.lock(|slot| slot.set(None));
                     // Replicate directly on reconnect. Probing first observes the
                     // peripheral's necessarily stale pre-sync digest and feeds a
                     // full-resync loop that can starve the hardware watchdog.
@@ -714,6 +731,10 @@ impl Runnable for CentralReplication {
                         ),
                         Ok(message @ crate::split_lighting::Message::FrameChunk { .. }) => {
                             let _ = FRAME_RESPONSES.try_send(message);
+                        }
+                        Ok(crate::split_lighting::Message::TransportStatus { auto, wired }) => {
+                            PERIPHERAL_TRANSPORT
+                                .lock(|slot| slot.set(Some(PeripheralTransport { auto, wired })));
                         }
                         _ => {}
                     }
