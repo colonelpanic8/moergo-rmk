@@ -536,9 +536,9 @@ impl Runnable for CentralReplication {
             .receiver()
             .expect("lighting replication owns one split-link receiver");
         let mut lighting = LightingChangedEvent::subscriber();
-        // Preserve the established central task/future layout without treating
-        // layer activity as replicated context. RMK's native split driver owns
-        // delivery; this arm intentionally performs no synchronization work.
+        // Layer activity is replicated context: the context packet carries the
+        // active-layer bitmap, and the peripheral compositor has no other
+        // source for it, so layer edges must dirty the context.
         let mut layers = LayerChangeEvent::subscriber();
         let mut indicators = LedIndicatorEvent::subscriber();
         let mut battery = BatteryStatusEvent::subscriber();
@@ -664,7 +664,7 @@ impl Runnable for CentralReplication {
                         health = ReplicationHealth::Resynchronizing;
                     }
                 }
-                Either4::Third(Either::First(Either::First(_))) => {}
+                Either4::Third(Either::First(Either::First(_))) => context_dirty = true,
                 Either4::Third(Either::First(Either::Second(_))) => context_dirty = true,
                 Either4::Third(Either::Second(Either::First(event))) => {
                     crate::lighting::set_left_battery(event.0);
