@@ -118,13 +118,13 @@ fn parse(path: &Path) -> Result<RuntimeConfig> {
 /// The state a file asks for, with every readable selector in it lowered
 /// through the topology the connected keyboard advertises.
 async fn desired_snapshot(client: &Client, config: RuntimeConfig) -> Result<Snapshot> {
+    if !config.needs_topology() {
+        return config.snapshot();
+    }
     let semantic_lighting = config
         .lighting
         .as_ref()
         .is_some_and(LightingConfig::has_semantic_targets);
-    if !semantic_lighting && config.deferred_binds().is_empty() {
-        return config.snapshot();
-    }
     let topology = client
         .read_lighting_key_topology()
         .await
@@ -204,7 +204,7 @@ pub fn run(selector: &Selector, command: &ConfigCommand) -> Result<()> {
         println!("{} is valid", file.display());
         // Saying so matters: an offline check cannot tell whether these cover
         // the keys the author meant, only that they are well formed.
-        for deferred in config.deferred_binds() {
+        for deferred in config.deferred_bindings() {
             println!("{deferred} resolves against the connected keyboard");
         }
         return Ok(());
