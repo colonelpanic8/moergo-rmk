@@ -1,6 +1,6 @@
 //! Shared MoErgo LED hardware and half-local standard lighting processors.
 
-use core::cell::Cell;
+use core::cell::{Cell, RefCell};
 use core::num::NonZeroU32;
 
 use embassy_nrf::gpio::{Level, Output, OutputDrive, Pin};
@@ -9,7 +9,7 @@ use embassy_nrf::pwm::{DutyCycle, Prescaler, SimpleConfig, SimplePwm};
 use embassy_nrf::spim::{self, Spim};
 use embassy_nrf::{Peri, bind_interrupts, peripherals};
 use embassy_sync::blocking_mutex::Mutex as BlockingMutex;
-use embassy_time::{Duration, Timer};
+use embassy_time::{Duration, Instant, Timer};
 use rmk::core_traits::Runnable;
 use rmk::event::{
     EventSubscriber, KeyboardEvent, KeyboardEventPos, LayerChangeEvent, MaintenanceModeEvent,
@@ -299,8 +299,81 @@ impl Ws2812Chain {
 
 pub(crate) struct LightingHardware {
     chain: Ws2812Chain,
-    chain_power: Output<'static>,
-    chain_powered: bool,
+}
+
+struct ChainPower {
+    pin: Output<'static>,
+    powered_at: Option<Instant>,
+    frame_visible: bool,
+}
+
+// The power monitor must be able to drop a dark chain on USB removal even
+// when the unchanged black frame does not require another presentation.
+static CHAIN_POWER: BlockingMutex<rmk::RawMutex, RefCell<Option<ChainPower>>> =
+    BlockingMutex::new(RefCell::new(None));
+
+fn initialize_chain_power(pin: Output<'static>) {
+    CHAIN_POWER.lock(|state| {
+        *state.borrow_mut() = Some(ChainPower {
+            pin,
+            powered_at: None,
+            frame_visible: false,
+        });
+    });
+}
+
+fn update_chain_power(usb_powered: bool, sleeping: bool) -> Option<Instant> {
+    CHAIN_POWER.lock(|state| {
+        let mut state = state.borrow_mut();
+        let state = state.as_mut()?;
+        let should_power = !sleeping && (usb_powered || state.frame_visible);
+        match (state.powered_at, should_power) {
+            (None, true) => {
+                state.pin.set_high();
+                let powered_at = Instant::now();
+                state.powered_at = Some(powered_at);
+                Some(powered_at)
+            }
+            (Some(_), false) => {
+                state.pin.set_low();
+                state.powered_at = None;
+                None
+            }
+            (powered_at, _) => powered_at,
+        }
+    })
+}
+
+fn set_chain_frame_visible(visible: bool) {
+    CHAIN_POWER.lock(|state| {
+        state
+            .borrow_mut()
+            .as_mut()
+            .expect("lighting initializes chain power")
+            .frame_visible = visible;
+    });
+}
+
+fn power_down_chain() {
+    CHAIN_POWER.lock(|state| {
+        let mut state = state.borrow_mut();
+        let state = state.as_mut().expect("lighting initializes chain power");
+        state.pin.set_low();
+        state.powered_at = None;
+    });
+}
+
+async fn wait_for_chain_power() -> bool {
+    loop {
+        let Some(powered_at) = update_chain_power(local_vbus_present(), false) else {
+            return false;
+        };
+        let elapsed = Instant::now().saturating_duration_since(powered_at);
+        if elapsed >= CHAIN_POWER_SETTLE {
+            return true;
+        }
+        Timer::after(CHAIN_POWER_SETTLE - elapsed).await;
+    }
 }
 
 impl LightingHardware {
@@ -309,32 +382,26 @@ impl LightingHardware {
         data_pin: Peri<'static, impl Pin>,
         chain_power_pin: Peri<'static, impl Pin>,
     ) -> Self {
+        initialize_chain_power(Output::new(
+            chain_power_pin,
+            Level::Low,
+            OutputDrive::Standard,
+        ));
         Self {
             chain: Ws2812Chain::new(spi, data_pin),
-            chain_power: Output::new(chain_power_pin, Level::Low, OutputDrive::Standard),
-            chain_powered: false,
         }
     }
 
     pub(crate) async fn write(&mut self, frame: &[Rgb8; LEDS_PER_HALF]) -> Result<(), spim::Error> {
         let visible = frame.iter().any(|pixel| *pixel != Rgb8::BLACK);
-        if !visible {
-            if self.chain_powered {
-                self.chain_power.set_low();
-                self.chain_powered = false;
-            }
+        set_chain_frame_visible(visible);
+        if !wait_for_chain_power().await {
             return Ok(());
-        }
-        if !self.chain_powered {
-            self.chain_power.set_high();
-            self.chain_powered = true;
-            Timer::after(CHAIN_POWER_SETTLE).await;
         }
         match self.chain.write(frame).await {
             Ok(()) => Ok(()),
             Err(error) => {
-                self.chain_power.set_low();
-                self.chain_powered = false;
+                power_down_chain();
                 Err(error)
             }
         }
@@ -394,10 +461,13 @@ impl LightingOutput<LogicalFrame<Rgb8, TOTAL_LEDS>> for HalfOutput {
     }
 
     async fn suspend(&mut self) -> Result<(), Self::Error> {
-        self.present_frame(&LogicalFrame::new(Rgb8::BLACK)).await
+        set_chain_frame_visible(false);
+        power_down_chain();
+        Ok(())
     }
 
     async fn resume(&mut self) -> Result<(), Self::Error> {
+        wait_for_chain_power().await;
         Ok(())
     }
 
@@ -717,6 +787,10 @@ pub fn power_monitor(
 }
 
 impl PowerMonitor {
+    fn update_chain_power(&self) {
+        update_chain_power(self.powered, self.sleeping);
+    }
+
     fn update_status_led(&mut self) {
         let duty = if self.powered && !self.sleeping {
             STATUS_PWM_DUTY
@@ -732,6 +806,7 @@ impl PowerMonitor {
             return;
         }
         self.powered = powered;
+        self.update_chain_power();
         self.update_status_led();
         rmk::event::publish_event(rmk::event::ChargingStateEvent { charging: powered });
         if matches!(
@@ -750,6 +825,7 @@ impl Runnable for PowerMonitor {
         // charge state is defined without waiting for a plug/unplug edge.
         Timer::after_secs(2).await;
         self.powered = local_vbus_present();
+        self.update_chain_power();
         rmk::event::publish_event(rmk::event::ChargingStateEvent {
             charging: self.powered,
         });
@@ -766,6 +842,7 @@ impl Runnable for PowerMonitor {
                 embassy_futures::select::Either::First(event) => {
                     self.sleeping = event.0;
                     self.refresh_power();
+                    self.update_chain_power();
                     self.update_status_led();
                 }
                 embassy_futures::select::Either::Second(()) => self.refresh_power(),
