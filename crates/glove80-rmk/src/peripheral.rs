@@ -4,7 +4,6 @@
 pub const BOARD_LEDS_PER_HALF: usize = 40;
 pub const BOARD_CHANNEL_CEILING: u8 = 230;
 pub const BOARD_MAINTENANCE_LED: u16 = 12;
-pub const BOARD_SPLIT_TRANSPORT_LED: u16 = 12;
 
 #[allow(dead_code)]
 #[path = "../../moergo-rmk/src/lighting.rs"]

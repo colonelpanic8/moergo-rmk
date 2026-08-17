@@ -7,7 +7,6 @@ mod trackpad;
 pub const BOARD_LEDS_PER_HALF: usize = 30;
 pub const BOARD_CHANNEL_CEILING: u8 = 102;
 pub const BOARD_MAINTENANCE_LED: u16 = 8;
-pub const BOARD_SPLIT_TRANSPORT_LED: u16 = 6;
 
 #[allow(dead_code)]
 #[path = "../../moergo-rmk/src/lighting.rs"]
