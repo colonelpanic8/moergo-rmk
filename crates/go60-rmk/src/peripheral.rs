@@ -24,6 +24,13 @@ mod keyboard_peripheral {
         crate::lighting::init_peripheral(p.SPI3, p.P0_27, p.P1_11)
     }
 
+    /// Render the native priority layer edge without waiting for bulk
+    /// application traffic.
+    #[register_processor(event)]
+    fn fast_layer_lighting() {
+        crate::lighting::FastPeripheralLayerLighting
+    }
+
     #[register_processor(runnable)]
     fn trackpad_device() {
         crate::trackpad::init(
