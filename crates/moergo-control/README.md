@@ -101,9 +101,11 @@ apply` resolve it through the topology advertised by the connected keyboard,
 including every emitter associated with that key. Raw LED targets remain
 available for underglow, indicators, and other emitters that are not keys.
 
-The same selectors address key bindings. A layer's `keys` grid is the fastest
-way to read a whole layer and the worst way to say "every key in this zone", so
-`[[layer.bind]]` entries layer over the grid:
+The same selectors address keys themselves. A `keys` grid is the fastest way to
+read a whole layer and the worst way to say "every key in this zone", and a
+standalone scene table puts a key's color hundreds of lines from its action.
+`[[layer.key]]` entries answer both: one selector, lowered to matrix keys for
+the action and to emitters for the lighting.
 
 ```toml
 [[layer]]
@@ -111,27 +113,76 @@ id = "magic"
 name = "Magic"
 keys = """…"""
 
-[[layer.bind]]
+# A black floor over every per-key emitter.
+[[layer.key]]
+zone = 1
+color = "#000000"
+
+# What this key does and how it looks, in one place. The inline color is the
+# key's unconditional look.
+[[layer.key]]
 key = [3, 0]
 action = "QK_BOOT"
+color = "#ff0000"
+effect = "blink"
 
-[[layer.bind]]
-zone = 1
-action = "KC_NO"
+# A key with several looks: rule arms read top down, first match wins, and the
+# inline color is the final arm. The enclosing layer supplies the "this layer
+# is active" condition on every arm.
+[[layer.key]]
+key = [0, 6]
+action = "QK_OUTPUT_USB"
+color = "#ff0000"
+
+[[layer.key.rule]]
+when = { connection = { transport = "usb" } }
+color = "#00ff00"
+
+[[layer.key.rule]]
+when = { connection = { usb_connected = true } }
+color = "#0000ff"
 ```
 
-Binds apply after the grid in file order, and the last one covering a key wins
-it, so a broad selector can be written first and corrected afterwards. A layer
-with no `keys` at all starts transparent. `led = N` binds the key that owns
-that emitter, and `all = true` binds every key the topology advertises.
+Within one arm every named condition must hold together; across arms the first
+match shows. An arm naming no conditions is the fallback and must come last —
+anything after it could never show and is rejected. The fallback lowers to a
+durable scene cell and conditional arms to conditional rules, which is exactly
+the compositor's own priority order.
 
-Only `key = [row, col]` is a question about the matrix; the rest are questions
-about the board, so `config validate` checks that they are well formed and
-names them as resolving against a connected keyboard, while `config diff` and
-`config apply` resolve them for real. The keyboard stores a grid rather than
-the selectors a file used to describe one, so `config pull` writes the whole
-layer back as `keys` — the same flattening that turns pulled lighting cells
-back into `led` selectors.
+An entry with only an `action` is a binding; one with only lighting is a scene
+written next to the layer it belongs to, which is also what saves repeating
+`layer = N` on every cell. Emitters that belong to no key — underglow,
+indicators — take the same shape under `[[layer.light]]`, which accepts every
+selector but no `action`:
+
+```toml
+[[layer.light]]
+led = 87
+color = "#202020"
+
+[[layer.light.rule]]
+when = { battery = { node = 0, max_level = 20 } }
+color = "#ff0000"
+```
+
+Entries apply in file order and the last one covering a key wins it, for the
+action and for the lighting alike. That ordering is what lets a broad selector
+be written first and corrected afterwards — `[[lighting.scene]]` rejects two
+cells for one slot, and a layer-attached cell overrides instead, including
+over a standalone cell for the same slot. `led = N` in `[[layer.key]]` names
+the key that owns that emitter, and `all = true` names every key the topology
+advertises.
+
+Only `key = [row, col]` is a question about the matrix, and only for a binding;
+everything else is a question about the board. `config validate` checks that
+those are well formed and names them as resolving against a connected keyboard,
+while `config diff` and `config apply` resolve them for real. A file that
+lights a key needs a `[lighting]` section, since synthesizing one would claim
+the brightness, background and policy values in it.
+
+The keyboard stores a grid and resolved cells rather than the selectors a file
+used to describe them, so `config pull` writes layers back as `keys` and
+lighting back as `led` cells.
 
 Unlike `[[lighting.scene]]`, this table is ordered: matching rules compose in
 table order and later ones win the slots they share, so `config diff` reports

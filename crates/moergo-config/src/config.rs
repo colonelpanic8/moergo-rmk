@@ -435,22 +435,28 @@ const fn default_auto_mouse_threshold() -> u16 {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct LayerConfig {
     pub id: String,
     pub name: String,
     /// The whole layer as a row-major grid. An absent grid starts the layer
-    /// transparent, which is what a layer written entirely as `[[layer.bind]]`
+    /// transparent, which is what a layer written entirely as `[[layer.key]]`
     /// entries wants.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub keys: String,
-    /// Selector-addressed bindings layered over `keys`.
-    #[serde(default, rename = "bind", skip_serializing_if = "Vec::is_empty")]
-    pub binds: Vec<BindConfig>,
+    /// Selector-addressed keys, each carrying what it does and how it looks.
+    #[serde(default, rename = "key", skip_serializing_if = "Vec::is_empty")]
+    pub key_entries: Vec<LayerKeyConfig>,
+    /// Lighting for emitters addressed as lights rather than keys — underglow,
+    /// indicators, and other emitters that need not belong to any key. Same
+    /// shape as `[[layer.key]]` minus the action.
+    #[serde(default, rename = "light", skip_serializing_if = "Vec::is_empty")]
+    pub light_entries: Vec<LayerKeyConfig>,
 }
 
 impl LayerConfig {
-    /// The layer as the firmware holds it: the grid with every bind applied
-    /// over it.
+    /// The layer as the firmware holds it: the grid with every entry's action
+    /// applied over it.
     fn actions(
         &self,
         profile_names: &[String],
@@ -463,13 +469,16 @@ impl LayerConfig {
         } else {
             parse_key_actions_for_matrix(&self.keys, profile_names, rows, cols)?
         };
-        for bind in &self.binds {
-            // The action is checked even for a bind whose target this caller
+        for entry in &self.key_entries {
+            let Some(text) = &entry.action else {
+                continue;
+            };
+            // The action is checked even for an entry whose target this caller
             // cannot resolve, so an offline validation still catches a typo in
             // a zone-addressed entry.
-            let action = parse_key_action(&bind.action, profile_names)
-                .with_context(|| format!("bind {}", bind.target))?;
-            let Some(positions) = bind.positions(topology, rows, cols)? else {
+            let action = parse_key_action(text, profile_names)
+                .with_context(|| format!("key {}", entry.target))?;
+            let Some(positions) = entry.positions(topology, rows, cols)? else {
                 continue;
             };
             for [row, col] in positions {
@@ -478,24 +487,225 @@ impl LayerConfig {
         }
         Ok(actions)
     }
+
+    /// This layer's lighting, as cells for the two scene tables.
+    ///
+    /// `index` is the layer's slot, which is what supplies the `layer` field a
+    /// standalone scene has to state and the layer condition a standalone
+    /// conditional rule has to repeat.
+    fn scenes(
+        &self,
+        index: u8,
+        topology: Option<&KeyTopology>,
+    ) -> Result<(Vec<SceneConfig>, Vec<ConditionalSceneConfig>)> {
+        let mut scenes = Vec::new();
+        let mut conditionals = Vec::new();
+        let keys = self.key_entries.iter().map(|entry| ("key", entry));
+        let lights = self.light_entries.iter().map(|entry| ("light", entry));
+        for (kind, entry) in keys.chain(lights) {
+            entry
+                .validate(kind == "light")
+                .with_context(|| format!("{kind} {}", entry.target))?;
+            let rules = entry.light_rules();
+            if rules.is_empty() {
+                continue;
+            }
+            let targets = entry
+                .target
+                .resolve_led_targets(topology)
+                .with_context(|| format!("{kind} {}", entry.target))?;
+            // A key's rules read first-match-wins, like a match statement: the
+            // first rule whose conditions hold shows, and an unconditional rule
+            // is the final arm. The device composes the other way around —
+            // later matching cells outrank earlier ones — so conditional rules
+            // lower in reverse. The unconditional arm lowers to a durable scene
+            // cell, which every conditional rule already outranks.
+            for rule in rules.iter().rev() {
+                let color = normalize_color(&rule.color)
+                    .with_context(|| format!("{kind} {}", entry.target))?;
+                match rule.conditions() {
+                    Some(when) => {
+                        for target in &targets {
+                            conditionals.push(ConditionalSceneConfig {
+                                target: *target,
+                                color: color.clone(),
+                                effect: rule.effect,
+                                period_ms: rule.period_ms,
+                                phase_ms: rule.phase_ms,
+                                duty: rule.duty,
+                                step_ms: rule.step_ms,
+                                layer: Some(LayerConditionConfig {
+                                    layer: index,
+                                    active: true,
+                                }),
+                                battery: when.battery,
+                                output_mode: when.output_mode,
+                                connection: when.connection,
+                                effects: when.effects,
+                            });
+                        }
+                    }
+                    None => {
+                        for target in &targets {
+                            scenes.push(SceneConfig {
+                                layer: index,
+                                target: *target,
+                                color: color.clone(),
+                                effect: rule.effect,
+                                period_ms: rule.period_ms,
+                                phase_ms: rule.phase_ms,
+                                duty: rule.duty,
+                                step_ms: rule.step_ms,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+        Ok((scenes, conditionals))
+    }
 }
 
-/// One key binding addressed the way a lighting cell is addressed.
+/// One key of a layer: what it does, how it lights, or both.
 ///
 /// A grid is the fastest way to read a whole layer and the worst way to say
-/// "the left thumb cluster"; these entries cover the second case. They apply
-/// after the grid in file order, so a broad selector can be written first and
-/// corrected afterwards, and the last entry covering a key wins it.
+/// "the left thumb cluster", and a standalone scene table puts a key's color
+/// hundreds of lines from its action. These entries cover both: one selector,
+/// lowered to matrix keys for the action and to emitters for the lighting.
+///
+/// A key's lighting is an ordered list of `[[layer.key.rule]]` arms read
+/// first-match-wins, with an inline `color` standing for the final
+/// unconditional arm. One key often has several looks — a transport key is one
+/// color carrying typing, another plugged but idle, a third unplugged — and
+/// they belong in one entry, not scattered across entries that repeat the
+/// selector.
+///
+/// Entries apply in file order and the last one covering a key wins it, for
+/// the action and for the lighting alike, so a broad selector can be written
+/// first and corrected afterwards.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
-pub struct BindConfig {
+pub struct LayerKeyConfig {
     #[serde(flatten)]
     pub target: KeyTargetConfig,
     /// The action, spelled the way `keys` spells one.
-    pub action: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub action: Option<String>,
+    /// The unconditional look, shorthand for a final rule with no conditions.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub color: Option<String>,
+    #[serde(default = "solid", skip_serializing_if = "is_solid")]
+    pub effect: EffectKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub period_ms: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub phase_ms: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duty: Option<u8>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub step_ms: Option<u16>,
+    /// Conditional looks, first match wins. The "this layer is active"
+    /// condition is the layer's own and is always implied.
+    #[serde(default, rename = "rule", skip_serializing_if = "Vec::is_empty")]
+    pub rules: Vec<LightRuleConfig>,
 }
 
-impl BindConfig {
-    /// The matrix keys this entry writes, or `None` when it needs a topology
+/// One arm of an entry's lighting: a full look plus the conditions under
+/// which it shows.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct LightRuleConfig {
+    pub color: String,
+    #[serde(default = "solid", skip_serializing_if = "is_solid")]
+    pub effect: EffectKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub period_ms: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub phase_ms: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duty: Option<u8>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub step_ms: Option<u16>,
+    /// Every named condition must hold together. A rule naming none is the
+    /// unconditional arm and must come last.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub when: Option<KeyConditionConfig>,
+}
+
+impl LightRuleConfig {
+    /// The conditions this rule adds, or `None` for the unconditional arm.
+    /// An empty `when = {}` names nothing and is the same arm.
+    fn conditions(&self) -> Option<&KeyConditionConfig> {
+        self.when
+            .as_ref()
+            .filter(|when| **when != KeyConditionConfig::default())
+    }
+}
+
+fn is_solid(effect: &EffectKind) -> bool {
+    matches!(effect, EffectKind::Solid)
+}
+
+/// The conditions a layer-attached rule adds to its layer's own.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct KeyConditionConfig {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub battery: Option<BatteryConditionConfig>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_mode: Option<OutputModeConfig>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub connection: Option<ConnectionConditionConfig>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effects: Option<EffectsConditionConfig>,
+}
+
+impl LayerKeyConfig {
+    /// The rule arms plus the inline color as the final unconditional one.
+    fn light_rules(&self) -> Vec<LightRuleConfig> {
+        let mut rules = self.rules.clone();
+        if let Some(color) = &self.color {
+            rules.push(LightRuleConfig {
+                color: color.clone(),
+                effect: self.effect,
+                period_ms: self.period_ms,
+                phase_ms: self.phase_ms,
+                duty: self.duty,
+                step_ms: self.step_ms,
+                when: None,
+            });
+        }
+        rules
+    }
+
+    fn validate(&self, lighting_only: bool) -> Result<()> {
+        if lighting_only && self.action.is_some() {
+            bail!("a light cannot bind an action; use [[layer.key]]");
+        }
+        let rules = self.light_rules();
+        if self.action.is_none() && rules.is_empty() {
+            bail!("names neither an action nor a light");
+        }
+        if self.color.is_none() {
+            // Silently ignoring these would leave an entry that looks like it
+            // lights something and does not.
+            let stray = self.effect != EffectKind::Solid
+                || self.period_ms.is_some()
+                || self.phase_ms.is_some()
+                || self.duty.is_some()
+                || self.step_ms.is_some();
+            if stray {
+                bail!("has lighting settings but no color");
+            }
+        }
+        for (index, rule) in rules.iter().enumerate() {
+            if rule.conditions().is_none() && index + 1 != rules.len() {
+                bail!("rule {index} names no conditions, so the arms after it can never show");
+            }
+        }
+        Ok(())
+    }
+
+    /// The matrix keys this entry binds, or `None` when it needs a topology
     /// the caller does not have.
     fn positions(
         &self,
@@ -512,7 +722,7 @@ impl BindConfig {
         };
         for [row, col] in &positions {
             if *row >= rows || *col >= cols {
-                bail!("bind {} is outside the {rows}x{cols} matrix", self.target);
+                bail!("key {} is outside the {rows}x{cols} matrix", self.target);
             }
         }
         Ok(Some(positions))
@@ -796,11 +1006,69 @@ impl KeyTargetConfig {
         }
     }
 
-    /// Whether resolving this selector needs the keyboard's advertised
-    /// topology. A matrix position is already the address the keymap uses, so
-    /// it resolves offline.
-    pub const fn needs_topology(&self) -> bool {
+    /// Whether binding a key through this selector needs the keyboard's
+    /// advertised topology. A matrix position is already the address the
+    /// keymap uses, so it resolves offline.
+    pub const fn key_needs_topology(&self) -> bool {
         !matches!(*self, Self::MatrixKey { .. })
+    }
+
+    /// Whether lighting a key through this selector needs that topology. An
+    /// emitter ID is already the address a scene cell uses; every other form,
+    /// a matrix position included, has to be asked about.
+    pub const fn led_needs_topology(&self) -> bool {
+        !matches!(*self, Self::Led { .. })
+    }
+
+    /// Lower this selector to the emitter targets it covers, or leave it
+    /// alone when the caller has no topology to ask. A scene cell can carry an
+    /// unresolved target — `config diff` resolves the source again before
+    /// comparing — which is what keeps `config validate` usable offline.
+    pub fn resolve_led_targets(&self, topology: Option<&KeyTopology>) -> Result<Vec<Self>> {
+        let Some(topology) = topology.filter(|_| self.led_needs_topology()) else {
+            return Ok(vec![*self]);
+        };
+        let leds = match *self {
+            Self::Led { .. } => unreachable!("an emitter ID needs no topology"),
+            Self::KeyId { key } => {
+                if !topology
+                    .keys
+                    .iter()
+                    .any(|candidate| candidate.id == KeyId(key))
+                {
+                    bail!("unknown logical key id {key}");
+                }
+                topology.resolve_leds(&KeyId(key))
+            }
+            Self::MatrixKey { key: [row, col] } => {
+                let matrix = LightingMatrixPosition { row, col };
+                if !topology
+                    .keys
+                    .iter()
+                    .any(|candidate| candidate.matrix == matrix)
+                {
+                    bail!("unknown matrix key [{row}, {col}]");
+                }
+                topology.resolve_leds(&matrix)
+            }
+            Self::Zone { zone } => {
+                let zone_id = LightingZoneId(zone);
+                if !topology.has_zone(zone_id) {
+                    bail!("unknown lighting zone {zone}");
+                }
+                topology.resolve_zone_leds(zone_id)
+            }
+            Self::All { all } => {
+                if !all {
+                    bail!("the all lighting selector must be true");
+                }
+                topology.all_leds()
+            }
+        };
+        if leds.is_empty() {
+            bail!("{self} has no associated lighting emitters");
+        }
+        Ok(leds.into_iter().map(|led| Self::led(led.0)).collect())
     }
 
     /// Lower this selector to the matrix keys it covers, in topology order.
@@ -1476,7 +1744,7 @@ impl RuntimeConfig {
     /// asks a question about the board — which keys a zone holds, which key
     /// owns an emitter — so it is left out here rather than guessed at. Use
     /// [`Self::snapshot_with_topology`] before writing to a keyboard, and
-    /// [`Self::deferred_binds`] to report what an offline check could not
+    /// [`Self::deferred_bindings`] to report what an offline check could not
     /// cover.
     pub fn snapshot(&self) -> Result<Snapshot> {
         self.build_snapshot(None)
@@ -1488,18 +1756,37 @@ impl RuntimeConfig {
         self.build_snapshot(Some(topology))
     }
 
-    /// The binds an offline snapshot leaves out, described for a report.
-    pub fn deferred_binds(&self) -> Vec<String> {
+    /// The bindings an offline snapshot leaves out, described for a report.
+    pub fn deferred_bindings(&self) -> Vec<String> {
         self.layers
             .iter()
             .flat_map(|layer| {
                 layer
-                    .binds
+                    .key_entries
                     .iter()
-                    .filter(|bind| bind.target.needs_topology())
-                    .map(|bind| format!("layer '{}' bind {}", layer.id, bind.target))
+                    .filter(|entry| entry.action.is_some() && entry.target.key_needs_topology())
+                    .map(|entry| format!("layer '{}' key {}", layer.id, entry.target))
             })
             .collect()
+    }
+
+    /// Whether any selector in this configuration has to be asked about the
+    /// keyboard before the state it describes is complete.
+    pub fn needs_topology(&self) -> bool {
+        self.lighting
+            .as_ref()
+            .is_some_and(LightingConfig::has_semantic_targets)
+            || self.layers.iter().any(|layer| {
+                layer
+                    .key_entries
+                    .iter()
+                    .chain(&layer.light_entries)
+                    .any(|entry| {
+                        (entry.action.is_some() && entry.target.key_needs_topology())
+                            || (!entry.light_rules().is_empty()
+                                && entry.target.led_needs_topology())
+                    })
+            })
     }
 
     fn build_snapshot(&self, topology: Option<&KeyTopology>) -> Result<Snapshot> {
@@ -1586,10 +1873,27 @@ impl RuntimeConfig {
                 }
             }
         }
+        let mut layer_scenes = Vec::new();
+        let mut layer_conditionals = Vec::new();
+        for (index, layer) in self.layers.iter().enumerate() {
+            let index = u8::try_from(index).context("more layers than a keymap can hold")?;
+            let (scenes, conditionals) = layer
+                .scenes(index, topology)
+                .with_context(|| format!("layer {} ({})", index, layer.id))?;
+            layer_scenes.extend(scenes);
+            layer_conditionals.extend(conditionals);
+        }
+        let declares_lighting = !layer_scenes.is_empty() || !layer_conditionals.is_empty();
+        // Synthesizing a lighting section would claim every value in it —
+        // brightness, background, policy — and write those defaults over what
+        // the keyboard holds. A file that lights a key has to say so.
+        if declares_lighting && self.lighting.is_none() {
+            bail!("layers declare lighting, but the file has no [lighting] section");
+        }
         let lighting = self
             .lighting
             .as_ref()
-            .map(LightingConfig::snapshot)
+            .map(|lighting| lighting.snapshot_with(layer_scenes, layer_conditionals))
             .transpose()?;
         let behavior = self.behavior.as_ref();
         let layer_count = layers.len();
@@ -1750,7 +2054,8 @@ impl RuntimeConfig {
                     // A keyboard holds a grid, not the selectors a source used
                     // to describe one, exactly as it holds resolved LED cells
                     // rather than lighting selectors.
-                    binds: Vec::new(),
+                    key_entries: Vec::new(),
+                    light_entries: Vec::new(),
                 }
             })
             .collect();
@@ -2396,81 +2701,10 @@ impl LightingConfig {
     /// Resolve semantic targets to the device's stable LED IDs. One selector
     /// may expand to any number of emitters; raw LED targets pass through.
     pub fn resolve_semantic_targets(&self, topology: &KeyTopology) -> Result<Self> {
-        fn resolve(
-            target: &KeyTargetConfig,
-            topology: &KeyTopology,
-        ) -> Result<Vec<KeyTargetConfig>> {
-            match *target {
-                KeyTargetConfig::Led { led } => Ok(vec![KeyTargetConfig::led(led)]),
-                KeyTargetConfig::KeyId { key } => {
-                    if !topology
-                        .keys
-                        .iter()
-                        .any(|candidate| candidate.id == KeyId(key))
-                    {
-                        bail!("unknown logical key id {key}");
-                    }
-                    let leds = topology.resolve_leds(&KeyId(key));
-                    if leds.is_empty() {
-                        bail!("logical key id {key} has no associated lighting emitters");
-                    }
-                    Ok(leds
-                        .into_iter()
-                        .map(|led| KeyTargetConfig::led(led.0))
-                        .collect())
-                }
-                KeyTargetConfig::MatrixKey { key: [row, col] } => {
-                    let matrix = LightingMatrixPosition { row, col };
-                    if !topology
-                        .keys
-                        .iter()
-                        .any(|candidate| candidate.matrix == matrix)
-                    {
-                        bail!("unknown matrix key [{row}, {col}]");
-                    }
-                    let leds = topology.resolve_leds(&matrix);
-                    if leds.is_empty() {
-                        bail!("matrix key [{row}, {col}] has no associated lighting emitters");
-                    }
-                    Ok(leds
-                        .into_iter()
-                        .map(|led| KeyTargetConfig::led(led.0))
-                        .collect())
-                }
-                KeyTargetConfig::Zone { zone } => {
-                    let zone_id = LightingZoneId(zone);
-                    if !topology.has_zone(zone_id) {
-                        bail!("unknown lighting zone {zone}");
-                    }
-                    let leds = topology.resolve_zone_leds(zone_id);
-                    if leds.is_empty() {
-                        bail!("lighting zone {zone} has no associated lighting emitters");
-                    }
-                    Ok(leds
-                        .into_iter()
-                        .map(|led| KeyTargetConfig::led(led.0))
-                        .collect())
-                }
-                KeyTargetConfig::All { all } => {
-                    if !all {
-                        bail!("the all lighting selector must be true");
-                    }
-                    let leds = topology.all_leds();
-                    if leds.is_empty() {
-                        bail!("the device has no lighting emitters");
-                    }
-                    Ok(leds
-                        .into_iter()
-                        .map(|led| KeyTargetConfig::led(led.0))
-                        .collect())
-                }
-            }
-        }
-
         let mut resolved = self.clone();
         resolved.scenes.clear();
         for cell in &self.scenes {
-            for target in resolve(&cell.target, topology)? {
+            for target in cell.target.resolve_led_targets(Some(topology))? {
                 resolved.scenes.push(SceneConfig {
                     target,
                     ..cell.clone()
@@ -2479,7 +2713,7 @@ impl LightingConfig {
         }
         resolved.conditional_scenes.clear();
         for cell in &self.conditional_scenes {
-            for target in resolve(&cell.target, topology)? {
+            for target in cell.target.resolve_led_targets(Some(topology))? {
                 resolved.conditional_scenes.push(ConditionalSceneConfig {
                     target,
                     ..cell.clone()
@@ -2490,6 +2724,21 @@ impl LightingConfig {
     }
 
     pub fn snapshot(&self) -> Result<LightingSnapshot> {
+        self.snapshot_with(Vec::new(), Vec::new())
+    }
+
+    /// [`Self::snapshot`] plus the cells the layers themselves declared.
+    ///
+    /// This table rejects two cells for the same slot, which is what catches a
+    /// scene written twice. Layer-attached cells are ordered instead: they
+    /// apply over this table and over each other in the order they were
+    /// written, so a broad selector followed by a specific correction reads
+    /// the way the compositor already reads.
+    pub fn snapshot_with(
+        &self,
+        layer_scenes: Vec<SceneConfig>,
+        layer_conditionals: Vec<ConditionalSceneConfig>,
+    ) -> Result<LightingSnapshot> {
         let mut conditional_scenes = self.conditional_scenes.clone();
         for (index, cell) in conditional_scenes.iter_mut().enumerate() {
             cell.color = normalize_color(&cell.color)?;
@@ -2511,6 +2760,16 @@ impl LightingConfig {
                 pair[0].target
             );
         }
+        for cell in layer_scenes {
+            validate_scene(&cell)?;
+            scenes.retain(|held| held.layer != cell.layer || held.target != cell.target);
+            scenes.push(cell);
+        }
+        scenes.sort();
+        for (index, cell) in layer_conditionals.iter().enumerate() {
+            validate_conditional_scene(conditional_scenes.len() + index, cell)?;
+        }
+        conditional_scenes.extend(layer_conditionals);
         if let Some(effects) = &self.effects {
             for (effect, table) in &effects.params {
                 if effect.trim().is_empty() {
@@ -3774,7 +4033,8 @@ mod tests {
                 id: "base".into(),
                 name: "Base".into(),
                 keys: render_key_actions(&[KeyAction::No; LAYER_SIZE], &[]),
-                binds: Vec::new(),
+                key_entries: Vec::new(),
+                light_entries: Vec::new(),
             }],
             morses: Vec::new(),
             combos: Vec::new(),
@@ -4006,10 +4266,55 @@ color = "#0000ff"
         .unwrap()
     }
 
-    fn bound(target: KeyTargetConfig, action: &str) -> BindConfig {
-        BindConfig {
+    fn entry(target: KeyTargetConfig) -> LayerKeyConfig {
+        LayerKeyConfig {
             target,
-            action: action.to_owned(),
+            action: None,
+            color: None,
+            effect: EffectKind::Solid,
+            period_ms: None,
+            phase_ms: None,
+            duty: None,
+            step_ms: None,
+            rules: Vec::new(),
+        }
+    }
+
+    fn bound(target: KeyTargetConfig, action: &str) -> LayerKeyConfig {
+        LayerKeyConfig {
+            action: Some(action.to_owned()),
+            ..entry(target)
+        }
+    }
+
+    fn lit(target: KeyTargetConfig, color: &str) -> LayerKeyConfig {
+        LayerKeyConfig {
+            color: Some(color.to_owned()),
+            ..entry(target)
+        }
+    }
+
+    fn arm(color: &str, when: Option<KeyConditionConfig>) -> LightRuleConfig {
+        LightRuleConfig {
+            color: color.to_owned(),
+            effect: EffectKind::Solid,
+            period_ms: None,
+            phase_ms: None,
+            duty: None,
+            step_ms: None,
+            when,
+        }
+    }
+
+    fn low_battery() -> KeyConditionConfig {
+        KeyConditionConfig {
+            battery: Some(BatteryConditionConfig {
+                node: 0,
+                min_level: None,
+                max_level: Some(20),
+                charge: ChargeConditionConfig::Any,
+            }),
+            ..KeyConditionConfig::default()
         }
     }
 
@@ -4017,14 +4322,36 @@ color = "#0000ff"
         parse_key_action(text, &[]).unwrap()
     }
 
+    /// A lighting section that claims nothing beyond its scene tables.
+    fn empty_lighting() -> LightingConfig {
+        LightingConfig {
+            brightness: 100,
+            output_mode: OutputModeConfig::AlwaysOn,
+            wake_layers: Vec::new(),
+            scene_policy: ScenePolicyConfig::EffectiveOnly,
+            background: BackgroundConfig {
+                enabled: false,
+                hue: 0,
+                saturation: 0,
+                value: 0,
+                speed: 0,
+                mode: BackgroundModeConfig::Solid,
+            },
+            effects: None,
+            scenes: Vec::new(),
+            conditional_scenes: Vec::new(),
+        }
+    }
+
     #[test]
-    fn binds_apply_over_the_grid_in_file_order() {
+    fn key_entries_apply_over_the_grid_in_file_order() {
         let mut config = minimal_runtime_config(None);
-        config.layers[0].binds = vec![
+        config.layers[0].key_entries = vec![
             bound(KeyTargetConfig::matrix_key(0, 0), "KC_A"),
             bound(KeyTargetConfig::matrix_key(0, 0), "KC_B"),
             bound(KeyTargetConfig::matrix_key(1, 2), "MO(0)"),
         ];
+        config.lighting = Some(empty_lighting());
 
         let layer = &config.snapshot().unwrap().layers[0];
         assert_eq!(layer[0], action("KC_B"));
@@ -4033,28 +4360,47 @@ color = "#0000ff"
     }
 
     #[test]
-    fn a_layer_written_only_as_binds_starts_transparent_and_round_trips() {
+    fn a_layer_written_only_as_key_entries_starts_transparent_and_round_trips() {
         let mut config = minimal_runtime_config(None);
         config.layers.push(LayerConfig {
             id: "magic".into(),
             name: "Magic".into(),
             keys: String::new(),
-            binds: vec![bound(KeyTargetConfig::matrix_key(3, 0), "QK_BOOT")],
+            key_entries: vec![LayerKeyConfig {
+                action: Some("QK_BOOT".to_owned()),
+                ..lit(KeyTargetConfig::matrix_key(3, 0), "#ff0000")
+            }],
+            light_entries: Vec::new(),
         });
+        config.lighting = Some(empty_lighting());
 
         let encoded = config.to_toml().unwrap();
-        assert!(encoded.contains("[[layer.bind]]"));
+        assert!(encoded.contains("[[layer.key]]"));
         let decoded = RuntimeConfig::from_toml(&encoded).unwrap();
 
-        let layer = &decoded.snapshot().unwrap().layers[1];
-        assert_eq!(layer[0], KeyAction::Transparent);
-        assert_eq!(layer[3 * usize::from(COLS)], action("QK_BOOT"));
+        let snapshot = decoded.snapshot().unwrap();
+        assert_eq!(snapshot.layers[1][0], KeyAction::Transparent);
+        assert_eq!(snapshot.layers[1][3 * usize::from(COLS)], action("QK_BOOT"));
+        assert_eq!(
+            snapshot.lighting.unwrap().scenes,
+            vec![SceneConfig {
+                layer: 1,
+                target: KeyTargetConfig::matrix_key(3, 0),
+                color: "#ff0000".to_owned(),
+                effect: EffectKind::Solid,
+                period_ms: None,
+                phase_ms: None,
+                duty: None,
+                step_ms: None,
+            }]
+        );
     }
 
     #[test]
-    fn binds_resolve_every_selector_through_the_topology() {
+    fn key_entries_resolve_every_selector_through_the_topology() {
         let topology = two_key_topology();
         let mut config = minimal_runtime_config(None);
+        config.lighting = Some(empty_lighting());
         for (target, expected) in [
             (KeyTargetConfig::zone(2), vec![1usize]),
             (KeyTargetConfig::all(), vec![0, 1]),
@@ -4062,7 +4408,7 @@ color = "#0000ff"
             (KeyTargetConfig::key(1), vec![1]),
             (KeyTargetConfig::matrix_key(0, 0), vec![0]),
         ] {
-            config.layers[0].binds = vec![bound(target, "KC_A")];
+            config.layers[0].key_entries = vec![bound(target, "KC_A")];
             let layer = &config.snapshot_with_topology(&topology).unwrap().layers[0];
             let bound_offsets = (0..2)
                 .filter(|offset| layer[*offset] == action("KC_A"))
@@ -4072,33 +4418,195 @@ color = "#0000ff"
     }
 
     #[test]
-    fn an_offline_snapshot_defers_the_selectors_it_cannot_resolve() {
+    fn a_layer_scene_is_written_next_to_its_key_and_the_last_entry_wins() {
+        let topology = two_key_topology();
         let mut config = minimal_runtime_config(None);
-        config.layers[0].binds = vec![
-            bound(KeyTargetConfig::zone(2), "KC_A"),
-            bound(KeyTargetConfig::matrix_key(0, 1), "KC_B"),
+        config.layers[0].key_entries = vec![
+            lit(KeyTargetConfig::all(), "#000000"),
+            lit(KeyTargetConfig::matrix_key(0, 1), "#00ff00"),
         ];
+        let mut lighting = empty_lighting();
+        // A standalone cell the layer then covers, which is the case the
+        // duplicate check would otherwise reject.
+        lighting.scenes = vec![SceneConfig {
+            layer: 0,
+            target: KeyTargetConfig::led(34),
+            color: "#0000ff".to_owned(),
+            effect: EffectKind::Solid,
+            period_ms: None,
+            phase_ms: None,
+            duty: None,
+            step_ms: None,
+        }];
+        config.lighting = Some(lighting);
 
+        let scenes = config
+            .snapshot_with_topology(&topology)
+            .unwrap()
+            .lighting
+            .unwrap()
+            .scenes;
         assert_eq!(
-            config.deferred_binds(),
-            vec!["layer 'base' bind zone 2".to_owned()]
+            scenes
+                .iter()
+                .map(|cell| (cell.target, cell.color.as_str()))
+                .collect::<Vec<_>>(),
+            vec![
+                (KeyTargetConfig::led(22), "#00ff00"),
+                (KeyTargetConfig::led(34), "#000000"),
+                (KeyTargetConfig::led(80), "#000000"),
+                (KeyTargetConfig::led(99), "#000000"),
+            ]
         );
-        let layer = &config.snapshot().unwrap().layers[0];
-        assert_eq!(layer[0], KeyAction::No);
-        assert_eq!(layer[1], action("KC_B"));
     }
 
     #[test]
-    fn a_bind_is_rejected_by_its_target_and_by_its_action() {
+    fn rule_arms_read_first_match_wins_and_carry_the_layer_condition() {
+        let usb_ready = KeyConditionConfig {
+            connection: Some(ConnectionConditionConfig {
+                transport: Some(TransportConfig::Usb),
+                profile: None,
+                ble_state: None,
+                bonded: None,
+                usb_connected: None,
+            }),
+            ..KeyConditionConfig::default()
+        };
+        let mut config = minimal_runtime_config(None);
+        config.layers[0].key_entries = vec![LayerKeyConfig {
+            action: Some("QK_OUTPUT_USB".to_owned()),
+            rules: vec![
+                arm("#00ff00", Some(usb_ready)),
+                arm("#0000ff", Some(low_battery())),
+            ],
+            // The inline color is the final unconditional arm.
+            ..lit(KeyTargetConfig::led(34), "#ff0000")
+        }];
+        config.lighting = Some(empty_lighting());
+
+        let lighting = config.snapshot().unwrap().lighting.unwrap();
+        // The fallback lowers to a durable scene cell, which every
+        // conditional rule outranks.
+        assert_eq!(
+            lighting
+                .scenes
+                .iter()
+                .map(|cell| (cell.target, cell.color.as_str()))
+                .collect::<Vec<_>>(),
+            vec![(KeyTargetConfig::led(34), "#ff0000")]
+        );
+        // Conditional arms lower in reverse: the device gives later table
+        // cells priority, so the first-written arm must land last.
+        let conditionals = lighting.conditional_scenes.unwrap();
+        assert_eq!(
+            conditionals
+                .iter()
+                .map(|cell| cell.color.as_str())
+                .collect::<Vec<_>>(),
+            vec!["#0000ff", "#00ff00"]
+        );
+        for cell in &conditionals {
+            assert_eq!(
+                cell.layer,
+                Some(LayerConditionConfig {
+                    layer: 0,
+                    active: true
+                })
+            );
+        }
+        assert!(conditionals[1].connection.is_some());
+        assert_eq!(conditionals[0].battery.unwrap().max_level, Some(20));
+    }
+
+    #[test]
+    fn a_light_entry_covers_an_emitter_that_belongs_to_no_key() {
         let topology = two_key_topology();
         let mut config = minimal_runtime_config(None);
+        // LED 99 has no key, so as a binding target it is an error; as a
+        // light it is simply an emitter.
+        config.layers[0].light_entries = vec![LayerKeyConfig {
+            rules: vec![arm("#ff0000", Some(low_battery()))],
+            ..lit(KeyTargetConfig::led(99), "#202020")
+        }];
+        config.lighting = Some(empty_lighting());
 
-        config.layers[0].binds = vec![bound(KeyTargetConfig::matrix_key(9, 9), "KC_A")];
+        let lighting = config
+            .snapshot_with_topology(&topology)
+            .unwrap()
+            .lighting
+            .unwrap();
+        assert_eq!(
+            lighting
+                .scenes
+                .iter()
+                .map(|cell| (cell.target, cell.color.as_str()))
+                .collect::<Vec<_>>(),
+            vec![(KeyTargetConfig::led(99), "#202020")]
+        );
+        assert_eq!(
+            lighting.conditional_scenes.unwrap()[0].target,
+            KeyTargetConfig::led(99)
+        );
+
+        let encoded = config.to_toml().unwrap();
+        assert!(encoded.contains("[[layer.light]]"));
+        assert!(encoded.contains("[[layer.light.rule]]"));
+        let decoded = RuntimeConfig::from_toml(&encoded).unwrap();
+        assert_eq!(
+            decoded.layers[0].light_entries,
+            config.layers[0].light_entries
+        );
+    }
+
+    #[test]
+    fn a_key_entry_is_rejected_by_its_target_its_action_and_its_emptiness() {
+        let topology = two_key_topology();
+        let mut config = minimal_runtime_config(None);
+        config.lighting = Some(empty_lighting());
+
+        config.layers[0].key_entries = vec![bound(KeyTargetConfig::matrix_key(9, 9), "KC_A")];
         assert!(format!("{:#}", config.snapshot().unwrap_err())
-            .contains("bind key [9, 9] is outside the 6x14 matrix"));
+            .contains("key key [9, 9] is outside the 6x14 matrix"));
 
-        config.layers[0].binds = vec![bound(KeyTargetConfig::zone(2), "KC_NOT_A_KEY")];
-        assert!(format!("{:#}", config.snapshot().unwrap_err()).contains("bind zone 2"));
+        config.layers[0].key_entries = vec![bound(KeyTargetConfig::zone(2), "KC_NOT_A_KEY")];
+        assert!(format!("{:#}", config.snapshot().unwrap_err()).contains("key zone 2"));
+
+        config.layers[0].key_entries = vec![entry(KeyTargetConfig::led(34))];
+        assert!(format!("{:#}", config.snapshot().unwrap_err())
+            .contains("names neither an action nor a light"));
+
+        config.layers[0].key_entries = vec![LayerKeyConfig {
+            effect: EffectKind::Blink,
+            action: Some("KC_A".to_owned()),
+            ..entry(KeyTargetConfig::matrix_key(0, 0))
+        }];
+        assert!(format!("{:#}", config.snapshot().unwrap_err())
+            .contains("has lighting settings but no color"));
+
+        // An arm with no conditions must be the last one.
+        config.layers[0].key_entries = vec![LayerKeyConfig {
+            rules: vec![arm("#111111", None), arm("#222222", Some(low_battery()))],
+            ..entry(KeyTargetConfig::led(34))
+        }];
+        assert!(format!("{:#}", config.snapshot().unwrap_err()).contains("can never show"));
+        // The inline color is that final arm, so an unconditional rule
+        // alongside it is the same mistake.
+        config.layers[0].key_entries = vec![LayerKeyConfig {
+            rules: vec![arm("#111111", None)],
+            ..lit(KeyTargetConfig::led(34), "#222222")
+        }];
+        assert!(format!("{:#}", config.snapshot().unwrap_err()).contains("can never show"));
+
+        config.layers[0].key_entries = Vec::new();
+        config.layers[0].light_entries = vec![bound(KeyTargetConfig::led(34), "KC_A")];
+        assert!(format!("{:#}", config.snapshot().unwrap_err())
+            .contains("a light cannot bind an action"));
+        config.layers[0].light_entries = Vec::new();
+
+        config.layers[0].key_entries = vec![lit(KeyTargetConfig::led(34), "#00ff00")];
+        config.lighting = None;
+        assert!(format!("{:#}", config.snapshot().unwrap_err()).contains("no [lighting] section"));
+        config.lighting = Some(empty_lighting());
 
         for (target, expected) in [
             (KeyTargetConfig::zone(9), "unknown lighting zone 9"),
@@ -4106,13 +4614,32 @@ color = "#0000ff"
             (KeyTargetConfig::led(99), "LED 99 belongs to no key"),
             (KeyTargetConfig::led(7), "unknown LED 7"),
         ] {
-            config.layers[0].binds = vec![bound(target, "KC_A")];
+            config.layers[0].key_entries = vec![bound(target, "KC_A")];
             assert!(format!(
                 "{:#}",
                 config.snapshot_with_topology(&topology).unwrap_err()
             )
             .contains(expected));
         }
+    }
+
+    #[test]
+    fn an_offline_snapshot_defers_the_selectors_it_cannot_resolve() {
+        let mut config = minimal_runtime_config(None);
+        config.layers[0].key_entries = vec![
+            bound(KeyTargetConfig::zone(2), "KC_A"),
+            bound(KeyTargetConfig::matrix_key(0, 1), "KC_B"),
+        ];
+        config.lighting = Some(empty_lighting());
+
+        assert_eq!(
+            config.deferred_bindings(),
+            vec!["layer 'base' key zone 2".to_owned()]
+        );
+        assert!(config.needs_topology());
+        let layer = &config.snapshot().unwrap().layers[0];
+        assert_eq!(layer[0], KeyAction::No);
+        assert_eq!(layer[1], action("KC_B"));
     }
 
     #[test]

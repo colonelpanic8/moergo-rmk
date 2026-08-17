@@ -208,7 +208,8 @@ pub fn import_moergo_layout(text: &str) -> Result<ImportedLayout> {
             id,
             name,
             keys: crate::render_keys(&matrix),
-            binds: Vec::new(),
+            key_entries: Vec::new(),
+            light_entries: Vec::new(),
         });
     }
 
