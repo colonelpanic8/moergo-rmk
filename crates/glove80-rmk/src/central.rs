@@ -5,6 +5,7 @@ pub const BOARD_LEDS_PER_HALF: usize = 40;
 pub const BOARD_SCENE_CAPACITY: usize = 100;
 pub const BOARD_CHANNEL_CEILING: u8 = 230;
 pub const BOARD_MAINTENANCE_LED: u16 = 12;
+pub const BOARD_SPLIT_TRANSPORT_LED: u16 = 12;
 
 #[path = "../../moergo-rmk/src/central_lighting.rs"]
 mod central_lighting;

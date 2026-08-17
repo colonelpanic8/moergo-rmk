@@ -2,7 +2,7 @@ use rmk::types::protocol::rynk::{
     DeviceDataDescriptor, DeviceDataRecord, DeviceDataValue, DeviceDataVolatility,
 };
 
-const RECORD_COUNT: u8 = 4;
+const RECORD_COUNT: u8 = 6;
 
 pub fn descriptor() -> DeviceDataDescriptor {
     DeviceDataDescriptor {
@@ -46,6 +46,25 @@ pub fn record_at(index: u8) -> Option<DeviceDataRecord> {
             "split.cableDetected",
             DeviceDataVolatility::Live,
             DeviceDataValue::Bool(wired),
+        )),
+        4 => Some(record(
+            "split.peripheral.activeTransport",
+            DeviceDataVolatility::Live,
+            text(match crate::central_lighting::peripheral_transport() {
+                None => "unknown",
+                Some(report) if !report.auto => "fixed",
+                Some(report) if report.wired => "wired",
+                Some(_) => "ble",
+            }),
+        )),
+        5 => Some(record(
+            "split.force",
+            DeviceDataVolatility::Live,
+            text(match rmk::split::selector::forced_mode() {
+                rmk::split::selector::FORCE_WIRED => "wired",
+                rmk::split::selector::FORCE_BLE => "ble",
+                _ => "auto",
+            }),
         )),
         _ => None,
     }

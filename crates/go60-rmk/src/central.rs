@@ -8,6 +8,7 @@ pub const BOARD_LEDS_PER_HALF: usize = 30;
 pub const BOARD_SCENE_CAPACITY: usize = 80;
 pub const BOARD_CHANNEL_CEILING: u8 = 102;
 pub const BOARD_MAINTENANCE_LED: u16 = 8;
+pub const BOARD_SPLIT_TRANSPORT_LED: u16 = 6;
 
 #[path = "../../moergo-rmk/src/central_lighting.rs"]
 mod central_lighting;
@@ -106,6 +107,11 @@ mod keyboard_central {
     #[register_processor(runnable)]
     fn remote_boot_dispatcher() {
         crate::central_lighting::RemoteBootDispatcher
+    }
+
+    #[register_processor(runnable)]
+    fn split_transport_lighting_nudge() {
+        crate::central_lighting::SplitTransportLightingNudge
     }
 
     #[register_processor(runnable)]

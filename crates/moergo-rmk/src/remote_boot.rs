@@ -10,6 +10,10 @@ use rmk::types::action::{Action, LightAction};
 
 /// User action reserved for the right-half physical bootloader key.
 pub const PERIPHERAL_BOOTLOADER_ACTION: u8 = 12;
+/// User action reserved for the Magic-layer split-transport toggle:
+/// force-BLE ↔ auto. Forced-wired stays host-only — with no cable present
+/// it would strand the halves mid-toggle.
+pub const SPLIT_TRANSPORT_TOGGLE_ACTION: u8 = 13;
 #[rmk::macros::processor(subscribe = [ActionEvent])]
 pub struct MagicKeyActions;
 
@@ -30,6 +34,17 @@ impl MagicKeyActions {
                 // A second release while one request is pending is equivalent
                 // to the first. Never block the keyboard task on split traffic.
                 let _ = crate::central_lighting::REMOTE_BOOT_REQUESTS.try_send(());
+            }
+            (false, Action::User(SPLIT_TRANSPORT_TOGGLE_ACTION)) => {
+                use rmk::split::selector;
+                if selector::auto_enabled() {
+                    let mode = if selector::forced_mode() == selector::FORCE_BLE {
+                        selector::FORCE_AUTO
+                    } else {
+                        selector::FORCE_BLE
+                    };
+                    let _ = rmk::split::request_transport_force(mode);
+                }
             }
             _ => {}
         }

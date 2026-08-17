@@ -85,6 +85,22 @@ const MAINTENANCE_LED: LedSlot = LedSlot(crate::BOARD_MAINTENANCE_LED);
 const MAINTENANCE_ENABLED: Rgb8 = Rgb8::new(0, 128, 0);
 const MAINTENANCE_DISABLED: Rgb8 = Rgb8::new(128, 0, 0);
 
+const SPLIT_TRANSPORT_LED: LedSlot = LedSlot(crate::BOARD_SPLIT_TRANSPORT_LED);
+const SPLIT_FORCED_BLE: Rgb8 = Rgb8::new(0, 80, 255);
+const SPLIT_FORCED_WIRED: Rgb8 = Rgb8::new(160, 0, 160);
+const SPLIT_AUTO_WIRED: Rgb8 = Rgb8::new(0, 192, 32);
+const SPLIT_AUTO_BLE: Rgb8 = Rgb8::new(160, 160, 0);
+
+fn split_transport_color() -> Rgb8 {
+    use rmk::split::selector;
+    match (selector::forced_mode(), selector::wired_selected()) {
+        (selector::FORCE_BLE, _) => SPLIT_FORCED_BLE,
+        (selector::FORCE_WIRED, _) => SPLIT_FORCED_WIRED,
+        (_, true) => SPLIT_AUTO_WIRED,
+        (_, false) => SPLIT_AUTO_BLE,
+    }
+}
+
 pub struct BoardStatus {
     compiled: ConditionalScenes<'static, BuiltinEffect, BoardBatteryProvider>,
 }
@@ -99,22 +115,35 @@ impl BoardStatus {
     fn maintenance_visible(input: &RenderInput<'_, LightingContext>) -> bool {
         input.context.layers.is_active(MAGIC_LAYER)
     }
+
+    fn split_transport_visible(input: &RenderInput<'_, LightingContext>) -> bool {
+        input.context.layers.is_active(MAGIC_LAYER) && rmk::split::selector::auto_enabled()
+    }
 }
 
 impl LightingSource<Rgb8, LightingContext> for BoardStatus {
     fn len(&self, input: &RenderInput<'_, LightingContext>) -> usize {
-        self.compiled.len(input) + usize::from(Self::maintenance_visible(input))
+        self.compiled.len(input)
+            + usize::from(Self::maintenance_visible(input))
+            + usize::from(Self::split_transport_visible(input))
     }
 
     fn slot(&self, index: usize, input: &RenderInput<'_, LightingContext>) -> LedSlot {
         let compiled_len = self.compiled.len(input);
         if index < compiled_len {
-            self.compiled.slot(index, input)
-        } else if index == compiled_len && Self::maintenance_visible(input) {
-            MAINTENANCE_LED
-        } else {
-            panic!("LightingSource index must be below len")
+            return self.compiled.slot(index, input);
         }
+        let mut extra = index - compiled_len;
+        if Self::maintenance_visible(input) {
+            if extra == 0 {
+                return MAINTENANCE_LED;
+            }
+            extra -= 1;
+        }
+        if Self::split_transport_visible(input) && extra == 0 {
+            return SPLIT_TRANSPORT_LED;
+        }
+        panic!("LightingSource index must be below len")
     }
 
     fn contribution(
@@ -124,17 +153,26 @@ impl LightingSource<Rgb8, LightingContext> for BoardStatus {
     ) -> Contribution<Rgb8> {
         let compiled_len = self.compiled.len(input);
         if index < compiled_len {
-            self.compiled.contribution(index, input)
-        } else if index == compiled_len && Self::maintenance_visible(input) {
-            let color = if rmk::state::maintenance_mode_enabled() {
-                MAINTENANCE_ENABLED
-            } else {
-                MAINTENANCE_DISABLED
-            };
-            Contribution::Opaque(BuiltinEffect::solid(color).sample(input.now_ms))
-        } else {
-            panic!("LightingSource index must be below len")
+            return self.compiled.contribution(index, input);
         }
+        let mut extra = index - compiled_len;
+        if Self::maintenance_visible(input) {
+            if extra == 0 {
+                let color = if rmk::state::maintenance_mode_enabled() {
+                    MAINTENANCE_ENABLED
+                } else {
+                    MAINTENANCE_DISABLED
+                };
+                return Contribution::Opaque(BuiltinEffect::solid(color).sample(input.now_ms));
+            }
+            extra -= 1;
+        }
+        if Self::split_transport_visible(input) && extra == 0 {
+            return Contribution::Opaque(
+                BuiltinEffect::solid(split_transport_color()).sample(input.now_ms),
+            );
+        }
+        panic!("LightingSource index must be below len")
     }
 }
 
@@ -1000,22 +1038,53 @@ impl PeripheralReplication {
     }
 }
 
+/// True on boards whose split transport is runtime-selected by cable detect.
+/// Without an automatic policy both selector predicates hold at once, and a
+/// transport announcement would carry no information.
+fn auto_split_enabled() -> bool {
+    !(rmk::split::selector::wired_selected() && rmk::split::selector::wireless_selected())
+}
+
+/// Resolves when the peripheral should (re)announce its transport: promptly
+/// while an announcement is pending a free queue slot, otherwise on the next
+/// selector edge. Boards without an automatic policy never announce.
+async fn transport_announce_due(pending: bool, wired: bool) {
+    if pending {
+        Timer::after_millis(250).await;
+        return;
+    }
+    if !auto_split_enabled() {
+        core::future::pending::<()>().await;
+    }
+    if wired {
+        rmk::split::selector::wait_wireless_selected().await;
+    } else {
+        rmk::split::selector::wait_wired_selected().await;
+    }
+}
+
 impl Runnable for PeripheralReplication {
     async fn run(&mut self) -> ! {
         let mut link = rmk::split_app::SPLIT_APP_LINK
             .receiver()
             .expect("lighting replication owns one split-link receiver");
         let mut heartbeat_at = embassy_time::Instant::now() + ATTESTATION_INTERVAL;
+        let mut announce_transport = auto_split_enabled();
         loop {
-            match embassy_futures::select::select3(
+            let wired = rmk::split::selector::wired_selected();
+            match embassy_futures::select::select4(
                 link.changed(),
                 rmk::split_app::SPLIT_APP_RX.receive(),
                 Timer::at(heartbeat_at),
+                transport_announce_due(announce_transport, wired),
             )
             .await
             {
-                embassy_futures::select::Either3::First(up) => {
+                embassy_futures::select::Either4::First(up) => {
                     self.stage.reset();
+                    if up {
+                        announce_transport = auto_split_enabled();
+                    }
                     // Drain the inbox only when the link went down. This half
                     // marks the link up on the first *inbound* message, so on
                     // the up edge the inbox already holds the head of the
@@ -1029,12 +1098,23 @@ impl Runnable for PeripheralReplication {
                         while rmk::split_app::SPLIT_APP_RX.try_receive().is_ok() {}
                     }
                 }
-                embassy_futures::select::Either3::Second(message) => self.process(message).await,
-                embassy_futures::select::Either3::Third(()) => {
+                embassy_futures::select::Either4::Second(message) => self.process(message).await,
+                embassy_futures::select::Either4::Third(()) => {
                     heartbeat_at += ATTESTATION_INTERVAL;
                     if rmk::split_app::SPLIT_APP_LINK.try_get() == Some(true) {
                         let _ = try_send_attestation(0);
+                        // Periodic re-announcement heals a transport report
+                        // lost to a saturated diagnostic queue.
+                        announce_transport = auto_split_enabled();
                     }
+                }
+                embassy_futures::select::Either4::Fourth(()) => {
+                    let wired = rmk::split::selector::wired_selected();
+                    announce_transport = rmk::split_app::SPLIT_APP_LINK.try_get() == Some(true)
+                        && !try_send_diagnostic(crate::split_lighting::Message::TransportStatus {
+                            auto: true,
+                            wired,
+                        });
                 }
             }
         }
