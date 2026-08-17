@@ -16,14 +16,16 @@ use moergo_config::{
     LightingSnapshot, OutputModeConfig, ParamSpec, RuntimeConfig, Snapshot,
 };
 use rynk::rmk_types::morse::MorseProfileName;
+use rynk::rmk_types::pointing::PointingMode;
 use rynk::rmk_types::protocol::rynk::{
     BleName, Cmd, LayerMetadata, LightingError, LightingExtendedConditionalSceneCell,
     LightingExtensionNameKind, LightingExtensionParamsRequest, LightingFeatureFlags,
-    LightingMutableState, MorseProfileEntry as WireMorseProfileEntry, RynkError,
-    SetAutoMouseLayerConfigsRequest, SetKeymapBulkRequest, SetLightingExtensionLayersRequest,
-    SetLightingExtensionParamRequest, SetLightingExtensionStateRequest,
-    SetLightingLayerPolicyRequest, SetLightingOutputModeRequest, SetLightingStateRequest,
-    SetLightingWakeLayersRequest, SetMorseHoldTriggerPositionsRequest, SetMorseProfileEntryRequest,
+    LightingMutableState, MorseProfileEntry as WireMorseProfileEntry, PointingCapabilities,
+    PointingConfig as WirePointingConfig, RynkError, SetAutoMouseLayerConfigsRequest,
+    SetKeymapBulkRequest, SetLightingExtensionLayersRequest, SetLightingExtensionParamRequest,
+    SetLightingExtensionStateRequest, SetLightingLayerPolicyRequest, SetLightingOutputModeRequest,
+    SetLightingStateRequest, SetLightingWakeLayersRequest, SetMorseHoldTriggerPositionsRequest,
+    SetMorseProfileEntryRequest,
 };
 use rynk::{Client, RynkHostError};
 
@@ -640,6 +642,32 @@ fn optional_endpoint<T>(result: std::result::Result<T, RynkHostError>) -> Result
     }
 }
 
+fn pointing_uses_keypad(config: &WirePointingConfig) -> bool {
+    config
+        .devices()
+        .iter()
+        .any(|entry| matches!(entry.mode, PointingMode::Keypad(_)))
+        || config
+            .overrides()
+            .iter()
+            .any(|entry| matches!(entry.mode, PointingMode::Keypad(_)))
+}
+
+fn require_keypad_capability(
+    result: std::result::Result<PointingCapabilities, RynkHostError>,
+) -> Result<()> {
+    match result {
+        Ok(capabilities) if capabilities.supports_keypad() => Ok(()),
+        Ok(_) => bail!(
+            "connected firmware does not support keypad pointing mode; flash updated firmware first"
+        ),
+        Err(error) if endpoint_unsupported(&error) => bail!(
+            "connected firmware does not advertise keypad pointing support; flash updated firmware first"
+        ),
+        Err(error) => Err(error.into()),
+    }
+}
+
 /// Read every physical layer slot's persistent metadata.
 ///
 /// Firmware without the layer-metadata endpoints reads as `None`, which leaves
@@ -1059,6 +1087,9 @@ async fn apply_snapshot(client: &Client, desired: &Snapshot, before: &Snapshot) 
             wanted.devices() != present.devices() || wanted.overrides() != present.overrides()
         });
         if differs {
+            if pointing_uses_keypad(&wanted) {
+                require_keypad_capability(client.get_pointing_capabilities().await)?;
+            }
             let mut next = wanted;
             next.revision = before.pointing.map_or(0, |present| present.revision);
             client
@@ -1252,5 +1283,33 @@ fn print_diff(desired: &Snapshot, live: &Snapshot) -> bool {
         }
         println!("{} difference(s)", differences.len());
         false
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rynk::rmk_types::pointing::KeypadConfig;
+    use rynk::rmk_types::protocol::rynk::{PointingDeviceConfig, POINTING_MODE_KEYPAD};
+
+    #[test]
+    fn keypad_capability_probe_handles_new_and_old_firmware() {
+        let mut pointing = WirePointingConfig {
+            device_count: 1,
+            ..Default::default()
+        };
+        pointing.devices[0] = PointingDeviceConfig {
+            device_id: 0,
+            mode: PointingMode::Keypad(KeypadConfig::default()),
+        };
+        assert!(pointing_uses_keypad(&pointing));
+        assert!(require_keypad_capability(Ok(PointingCapabilities {
+            mode_flags: POINTING_MODE_KEYPAD,
+        }))
+        .is_ok());
+
+        let error = require_keypad_capability(Err(RynkHostError::Rejected(RynkError::UnknownCmd)))
+            .unwrap_err();
+        assert!(error.to_string().contains("flash updated firmware first"));
     }
 }

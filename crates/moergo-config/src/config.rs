@@ -10,8 +10,8 @@ use rynk::rmk_types::combo::{Combo, ComboDefinition, MatrixPosition, PositionCom
 use rynk::rmk_types::morse::{Morse, MorseMode, MorseProfile, MORSE_PROFILE_NAME_MAX_LEN};
 use rynk::rmk_types::pointing::{
     CaretConfig as WireCaretConfig, CursorConfig as WireCursorConfig, DragConfig as WireDragConfig,
-    PointingMode, PressConfig as WirePressConfig, ScrollConfig as WireScrollConfig,
-    SniperConfig as WireSniperConfig,
+    KeypadConfig as WireKeypadConfig, PointingMode, PressConfig as WirePressConfig,
+    ScrollConfig as WireScrollConfig, SniperConfig as WireSniperConfig,
 };
 use rynk::rmk_types::protocol::rynk::{
     BehaviorConfig as WireBehaviorConfig, BehaviorOptions as WireBehaviorOptions, LayerMetadata,
@@ -195,6 +195,30 @@ pub enum PointingModeConfig {
         #[serde(default = "right_keycode")]
         keycode_right: u8,
     },
+    Keypad {
+        #[serde(default)]
+        disable_x: bool,
+        #[serde(default)]
+        disable_y: bool,
+        #[serde(default)]
+        invert_x: bool,
+        #[serde(default)]
+        invert_y: bool,
+        #[serde(default = "hundred")]
+        threshold_x: i16,
+        #[serde(default = "hundred")]
+        threshold_y: i16,
+        #[serde(default = "up_keycode")]
+        keycode_up: u8,
+        #[serde(default = "down_keycode")]
+        keycode_down: u8,
+        #[serde(default = "left_keycode")]
+        keycode_left: u8,
+        #[serde(default = "right_keycode")]
+        keycode_right: u8,
+        #[serde(default = "no_keycode")]
+        keycode_tap: u8,
+    },
     Drag {
         #[serde(default = "one")]
         multiplier_x: u8,
@@ -246,6 +270,9 @@ const fn left_keycode() -> u8 {
 }
 const fn right_keycode() -> u8 {
     rynk::rmk_types::keycode::HidKeyCode::Right as u8
+}
+const fn no_keycode() -> u8 {
+    rynk::rmk_types::keycode::HidKeyCode::No as u8
 }
 
 /// Global and parameterized behavior state managed over Rynk.
@@ -1059,6 +1086,23 @@ pub struct Snapshot {
 }
 
 impl PointingModeConfig {
+    fn validate(&self) -> Result<()> {
+        if let Self::Keypad {
+            threshold_x,
+            threshold_y,
+            ..
+        } = self
+        {
+            if *threshold_x <= 0 {
+                bail!("keypad pointing threshold_x must be greater than zero");
+            }
+            if *threshold_y <= 0 {
+                bail!("keypad pointing threshold_y must be greater than zero");
+            }
+        }
+        Ok(())
+    }
+
     fn to_wire(&self) -> PointingMode {
         match *self {
             Self::Cursor {
@@ -1118,6 +1162,31 @@ impl PointingModeConfig {
                 keycode_down: keycode_down.into(),
                 keycode_left: keycode_left.into(),
                 keycode_right: keycode_right.into(),
+            }),
+            Self::Keypad {
+                disable_x,
+                disable_y,
+                invert_x,
+                invert_y,
+                threshold_x,
+                threshold_y,
+                keycode_up,
+                keycode_down,
+                keycode_left,
+                keycode_right,
+                keycode_tap,
+            } => PointingMode::Keypad(WireKeypadConfig {
+                disable_x,
+                disable_y,
+                invert_x,
+                invert_y,
+                threshold_x,
+                threshold_y,
+                keycode_up: keycode_up.into(),
+                keycode_down: keycode_down.into(),
+                keycode_left: keycode_left.into(),
+                keycode_right: keycode_right.into(),
+                keycode_tap: keycode_tap.into(),
             }),
             Self::Drag {
                 multiplier_x,
@@ -1202,6 +1271,19 @@ impl PointingModeConfig {
                 keycode_left: config.keycode_left as u8,
                 keycode_right: config.keycode_right as u8,
             },
+            PointingMode::Keypad(config) => Self::Keypad {
+                disable_x: config.disable_x,
+                disable_y: config.disable_y,
+                invert_x: config.invert_x,
+                invert_y: config.invert_y,
+                threshold_x: config.threshold_x,
+                threshold_y: config.threshold_y,
+                keycode_up: config.keycode_up as u8,
+                keycode_down: config.keycode_down as u8,
+                keycode_left: config.keycode_left as u8,
+                keycode_right: config.keycode_right as u8,
+                keycode_tap: config.keycode_tap as u8,
+            },
         })
     }
 }
@@ -1223,6 +1305,7 @@ impl PointingConfig {
             ..Default::default()
         };
         for (slot, device) in self.devices.iter().enumerate() {
+            device.mode.validate()?;
             if self.devices[..slot]
                 .iter()
                 .any(|old| old.device_id == device.device_id)
@@ -1238,6 +1321,7 @@ impl PointingConfig {
             };
         }
         for (slot, entry) in self.overrides.iter().enumerate() {
+            entry.mode.validate()?;
             if usize::from(entry.layer) >= layer_count {
                 bail!(
                     "pointing override {slot} references missing layer {}",
@@ -4138,6 +4222,18 @@ mode = "scroll"
 [[pointing.device]]
 device_id = 1
 mode = "cursor"
+
+[[pointing.override]]
+layer = 0
+device_id = 0
+mode = "keypad"
+threshold_x = 120
+threshold_y = 30
+keycode_up = 0x80
+keycode_down = 0x81
+keycode_left = 0xAC
+keycode_right = 0xAB
+keycode_tap = 0xAE
 "#;
         let config = RuntimeConfig::from_toml(text).unwrap();
         let snapshot = config.snapshot().unwrap();
@@ -4152,6 +4248,18 @@ mode = "cursor"
             pointing.devices()[1].mode,
             PointingMode::Cursor(_)
         ));
+        assert_eq!(pointing.overrides().len(), 1);
+        match pointing.overrides()[0].mode {
+            PointingMode::Keypad(config) => {
+                assert_eq!((config.threshold_x, config.threshold_y), (120, 30));
+                assert_eq!(config.keycode_up as u8, 0x80);
+                assert_eq!(config.keycode_down as u8, 0x81);
+                assert_eq!(config.keycode_left as u8, 0xAC);
+                assert_eq!(config.keycode_right as u8, 0xAB);
+                assert_eq!(config.keycode_tap as u8, 0xAE);
+            }
+            mode => panic!("expected keypad mode, got {mode:?}"),
+        }
 
         let serialized = config.to_toml().unwrap();
         let rebuilt = RuntimeConfig::from_toml(&serialized)
@@ -4159,7 +4267,50 @@ mode = "cursor"
             .snapshot()
             .unwrap();
         assert_eq!(rebuilt.rows, 5);
-        assert_eq!(rebuilt.pointing.unwrap().devices(), pointing.devices());
+        let rebuilt_pointing = rebuilt.pointing.unwrap();
+        assert_eq!(rebuilt_pointing.devices(), pointing.devices());
+        assert_eq!(rebuilt_pointing.overrides(), pointing.overrides());
+    }
+
+    #[test]
+    fn keypad_pointing_thresholds_must_be_positive() {
+        let invalid_x = PointingModeConfig::Keypad {
+            disable_x: false,
+            disable_y: false,
+            invert_x: false,
+            invert_y: false,
+            threshold_x: 0,
+            threshold_y: 30,
+            keycode_up: 0x80,
+            keycode_down: 0x81,
+            keycode_left: 0xAC,
+            keycode_right: 0xAB,
+            keycode_tap: 0xAE,
+        };
+        assert!(invalid_x
+            .validate()
+            .unwrap_err()
+            .to_string()
+            .contains("threshold_x"));
+
+        let invalid_y = PointingModeConfig::Keypad {
+            disable_x: false,
+            disable_y: false,
+            invert_x: false,
+            invert_y: false,
+            threshold_x: 120,
+            threshold_y: -1,
+            keycode_up: 0x80,
+            keycode_down: 0x81,
+            keycode_left: 0xAC,
+            keycode_right: 0xAB,
+            keycode_tap: 0xAE,
+        };
+        assert!(invalid_y
+            .validate()
+            .unwrap_err()
+            .to_string()
+            .contains("threshold_y"));
     }
 
     #[test]
