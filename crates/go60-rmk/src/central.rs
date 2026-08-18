@@ -122,7 +122,11 @@ mod keyboard_central {
         crate::central_lighting::RemoteBootDispatcher
     }
 
-    // bisect-A: nudge disabled
+    #[register_processor(runnable)]
+    fn split_transport_lighting_nudge() {
+        crate::panic_store::stamp(7);
+        crate::central_lighting::SplitTransportLightingNudge
+    }
 
     #[register_processor(runnable)]
     fn trackpad_device() {

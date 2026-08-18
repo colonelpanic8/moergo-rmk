@@ -35,7 +35,7 @@ impl MagicKeyActions {
                 // to the first. Never block the keyboard task on split traffic.
                 let _ = crate::central_lighting::REMOTE_BOOT_REQUESTS.try_send(());
             }
-            (false, Action::User(SPLIT_TRANSPORT_TOGGLE_ACTION)) if false => {
+            (false, Action::User(SPLIT_TRANSPORT_TOGGLE_ACTION)) => {
                 use rmk::split::selector;
                 if selector::auto_enabled() {
                     let mode = if selector::forced_mode() == selector::FORCE_BLE {

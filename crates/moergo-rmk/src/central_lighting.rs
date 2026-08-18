@@ -654,6 +654,7 @@ impl Runnable for CentralReplication {
                 Either4::First(up) => {
                     link_up = up;
                     awaiting_ack = None;
+                    clear_peripheral_transport();
                     // Replicate directly on reconnect. Probing first observes the
                     // peripheral's necessarily stale pre-sync digest and feeds a
                     // full-resync loop that can starve the hardware watchdog.
