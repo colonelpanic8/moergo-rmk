@@ -76,19 +76,18 @@ pub fn debug_stamp(stage: u32) {
 }
 
 pub fn debug_trace_parts() -> (u32, u32, [u32; 2], [u32; 2]) {
-    // The reset-cause ring did its job during the crash-loop hunt; the two
-    // slots now carry wired-link traffic, which is what the split debug relay
-    // is actually being used to diagnose. Byte counts run free; the frame
-    // counts saturate at 255, enough to tell "none" from "plenty".
-    let (stage, boots, rr, _cause) = crate::panic_store::trace_parts();
-    let (rx_bytes, frames_ok, frames_bad, tx_frames) = ::rmk::split::serial::counters::snapshot();
-    let sat = |v: u32| v.min(255);
-    let packed = (sat(::rmk::split::selector::wired_entries()) << 24)
-        | (sat(frames_ok) << 16)
-        | (sat(frames_bad) << 8)
-        | sat(tx_frames);
-    (stage, boots, rr, [rx_bytes, packed])
+    // The reset-cause ring did its job during the crash-loop hunt; all four
+    // relay slots now carry wired-link traffic, which is what the debug relay
+    // is actually being used to diagnose. Counts that can run into the
+    // thousands get a full word; the rest share one, 16 bits each.
+    let (stage, boots, _rr, _cause) = crate::panic_store::trace_parts();
+    let (rx_bytes, frames_ok, frames_bad, tx_frames, tx_done) = ::rmk::split::serial::counters::snapshot();
+    let half = |v: u32| v.min(0xffff);
+    let selects_and_bad = (half(::rmk::split::selector::wired_entries()) << 16) | half(frames_bad);
+    let tx = (half(tx_frames) << 16) | half(tx_done);
+    (stage, boots, [selects_and_bad, tx], [rx_bytes, frames_ok])
 }
+
 
 pub fn debug_panic_loc() -> Option<heapless::String<{ crate::panic_store::REPORT_CAP }>> {
     crate::panic_store::raw_report_loc()

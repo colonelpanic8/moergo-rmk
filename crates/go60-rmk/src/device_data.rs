@@ -32,20 +32,18 @@ fn peripheral_trace_text() -> heapless::String<96> {
             let _ = out.push_str("none");
         }
         Some(d) => {
-            // cause[0] is the peripheral's RX byte count; cause[1] packs
-            // wired-entry, frame-ok, frame-bad and TX counts one byte each.
-            let packed = d.cause[1];
+            // rr[0] packs wired-selects and bad frames, rr[1] the attempted
+            // and completed TX counts; cause carries RX bytes and good frames.
             let _ = write!(
                 out,
-                "stage={} boots={} rr={:#x} wired={} rx={} ok={} bad={} tx={}",
-                d.stage,
+                "boots={} wired={} rx={} ok={} bad={} tx={}/{}",
                 d.boots,
-                d.rr[0],
-                packed >> 24,
+                d.rr[0] >> 16,
                 d.cause[0],
-                (packed >> 16) & 0xff,
-                (packed >> 8) & 0xff,
-                packed & 0xff
+                d.cause[1],
+                d.rr[0] & 0xffff,
+                d.rr[1] >> 16,
+                d.rr[1] & 0xffff
             );
         }
     }
@@ -145,16 +143,17 @@ pub fn record_at(index: u8) -> Option<DeviceDataRecord> {
 /// off the central over USB while the split link itself is down.
 fn wired_counter_text() -> heapless::String<64> {
     use core::fmt::Write as _;
-    let (rx, ok, bad, tx) = rmk::split::serial::counters::snapshot();
+    let (rx, ok, bad, tx, tx_done) = rmk::split::serial::counters::snapshot();
     let mut out = heapless::String::new();
     let _ = write!(
         out,
-        "wired={} rx={} ok={} bad={} tx={}",
+        "wired={} rx={} ok={} bad={} tx={}/{}",
         rmk::split::selector::wired_entries(),
         rx,
         ok,
         bad,
-        tx
+        tx,
+        tx_done
     );
     out
 }
