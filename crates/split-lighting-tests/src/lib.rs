@@ -36,6 +36,9 @@ mod lighting {
 #[path = "../../moergo-rmk/src/split_lighting.rs"]
 mod split_lighting;
 
+#[path = "../../moergo-rmk/src/lighting_output.rs"]
+mod lighting_output;
+
 use lighting::BatteryPair;
 use split_lighting::{
     AttestationDecision, AttestationRecovery, DecodeError, FrameChunkDecision, FramePageAssembly,
@@ -55,6 +58,14 @@ fn mutable() -> StandardMutableState {
             mode: BackgroundMode::Breathe,
         },
     }
+}
+
+#[test]
+fn visibility_uses_the_post_ceiling_output() {
+    let reactive_idle = [Rgb8::new(0, 0, 1)];
+    assert!(!lighting_output::frame_visible(&reactive_idle, 102));
+    assert!(lighting_output::frame_visible(&reactive_idle, 230));
+    assert!(lighting_output::frame_visible(&[Rgb8::new(0, 0, 2)], 102));
 }
 
 #[test]
