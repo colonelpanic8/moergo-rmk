@@ -2193,6 +2193,8 @@ impl BehaviorConfig {
             oneshot_timeout_ms: self.oneshot_timeout_ms,
             tap_interval_ms: self.tap_interval_ms,
             tap_capslock_interval_ms: self.tap_capslock_interval_ms,
+            morse_default_profile: self.morse.default_profile.to_wire().unwrap_or_default(),
+            morse_prior_idle_time_ms: self.morse.prior_idle_ms,
         }
     }
 
