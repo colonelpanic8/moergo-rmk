@@ -457,6 +457,10 @@ impl AttestationRecovery {
 }
 
 impl Message {
+    /// Out-of-line: the en/decode jump tables must not inline into the
+    /// replication futures — growing this enum while they were inlined
+    /// produced mid-instruction hardfaults on the central.
+    #[inline(never)]
     pub fn encode(self) -> SplitAppData {
         let mut out = [0u8; SPLIT_APP_MSG_MAX];
         out[0] = VERSION;
@@ -909,6 +913,7 @@ impl Message {
         SplitAppData::new(&out[..len]).expect("semantic lighting packet is bounded")
     }
 
+    #[inline(never)]
     pub fn decode(data: SplitAppData) -> Result<Self, DecodeError> {
         let bytes = data.payload();
         if bytes.first() != Some(&VERSION) {
