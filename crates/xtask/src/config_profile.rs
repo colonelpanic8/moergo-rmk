@@ -35,6 +35,79 @@ pub fn verify(stock: &Path, configured: &Path) -> Result<Digests> {
     Ok(configured_digests)
 }
 
+pub fn verify_stock_defaults(
+    stock: &Path,
+    configured: &Path,
+    bilateral_thumbs: bool,
+) -> Result<Digests> {
+    let stock_source = fs::read_to_string(stock)?;
+    let configured_source = fs::read_to_string(configured)?;
+    let stock_configuration: Value = toml::from_str(&stock_source)?;
+    let configured_configuration: Value = toml::from_str(&configured_source)?;
+
+    verify_stock_values(
+        stock_configuration,
+        configured_configuration,
+        bilateral_thumbs,
+    )
+    .map_err(|error| {
+        format!(
+            "compiled defaults differ from stock ({error}):\n  stock:      {}\n  configured: {}",
+            stock.display(),
+            configured.display(),
+        )
+    })?;
+
+    digests_from_str(&configured_source)
+}
+
+fn verify_stock_values(mut stock: Value, configured: Value, bilateral_thumbs: bool) -> Result<()> {
+    if bilateral_thumbs {
+        mark_glove80_thumbs_bilateral(&mut stock)?;
+    }
+    if stock != configured {
+        return Err("configured defaults differ from stock".into());
+    }
+    Ok(())
+}
+
+fn mark_glove80_thumbs_bilateral(configuration: &mut Value) -> Result<()> {
+    let map = configuration
+        .get_mut("layout")
+        .and_then(Value::as_table_mut)
+        .and_then(|layout| layout.get_mut("map"))
+        .and_then(|value| value.as_str())
+        .ok_or("stock configuration must define layout.map")?;
+    let mut transformed = map.to_owned();
+    for (row, col, hand) in [
+        (0, 6, 'L'),
+        (1, 6, 'L'),
+        (2, 6, 'L'),
+        (3, 6, 'L'),
+        (4, 6, 'L'),
+        (5, 6, 'L'),
+        (0, 7, 'R'),
+        (1, 7, 'R'),
+        (2, 7, 'R'),
+        (3, 7, 'R'),
+        (4, 7, 'R'),
+        (5, 7, 'R'),
+    ] {
+        let original = format!("({row},{col},{hand},");
+        let bilateral = format!("({row},{col},*,");
+        if !transformed.contains(&original) {
+            return Err(format!("stock layout.map is missing Glove80 thumb {original}").into());
+        }
+        transformed = transformed.replace(&original, &bilateral);
+    }
+    *configuration
+        .get_mut("layout")
+        .and_then(Value::as_table_mut)
+        .and_then(|layout| layout.get_mut("map"))
+        .expect("layout.map was checked above") = Value::String(transformed);
+    Ok(())
+}
+
 fn digests_from_str(source: &str) -> Result<Digests> {
     let configuration: Value = toml::from_str(source)?;
     let platform_profile = platform_profile(&configuration)?;
@@ -208,5 +281,29 @@ wake_layers = [2]
     fn wake_layer_must_resolve_to_a_named_layer() {
         let invalid = STOCK.replace("wake_layers = [1]", "wake_layers = [15]");
         assert!(digests_from_str(&invalid).is_err());
+    }
+
+    #[test]
+    fn stock_defaults_reject_personal_bindings() {
+        let stock: Value = toml::from_str(STOCK).unwrap();
+        let personal: Value = toml::from_str(PERSONAL).unwrap();
+        assert!(verify_stock_values(stock.clone(), stock, false).is_ok());
+        assert!(verify_stock_values(toml::from_str(STOCK).unwrap(), personal, false).is_err());
+    }
+
+    #[test]
+    fn glove80_stock_normalization_only_changes_thumb_hands() {
+        let mut stock: Value = toml::from_str(
+            r#"
+[layout]
+map = "(0,6,L,@thumb) (1,6,L,@thumb) (2,6,L,@thumb) (3,6,L,@thumb) (4,6,L,@thumb) (5,6,L,@thumb) (0,7,R,@thumb) (1,7,R,@thumb) (2,7,R,@thumb) (3,7,R,@thumb) (4,7,R,@thumb) (5,7,R,@thumb)"
+"#,
+        )
+        .unwrap();
+        mark_glove80_thumbs_bilateral(&mut stock).unwrap();
+        let map = stock["layout"]["map"].as_str().unwrap();
+        assert_eq!(map.matches(",*,").count(), 12);
+        assert!(!map.contains(",L,"));
+        assert!(!map.contains(",R,"));
     }
 }
