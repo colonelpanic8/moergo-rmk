@@ -1,0 +1,134 @@
+//! Persist the last panic across resets so a crash-looping half can be
+//! interrogated over Rynk after it comes back up.
+//!
+//! The store lives in a `.uninit` RAM section, which `cortex-m-rt` neither
+//! zeroes nor copies at boot, so it survives both `SCB::sys_reset` and a
+//! watchdog reset. The panic handler formats location and message into it
+//! and reboots immediately (no halt-until-watchdog); the next boot that
+//! reaches [`capture_boot`] moves the report into ordinary memory and
+//! clears the marker, so one report describes exactly one crash.
+//!
+//! Including this module replaces `panic-probe`: it defines the binary's
+//! `#[panic_handler]` and its `HardFault` exception handler.
+
+use core::cell::RefCell;
+use core::fmt::Write as _;
+use core::mem::MaybeUninit;
+use core::panic::PanicInfo;
+use core::ptr::{addr_of, addr_of_mut};
+
+use embassy_sync::blocking_mutex::Mutex as BlockingMutex;
+
+const MAGIC: u32 = 0x50414e49;
+pub const REPORT_CAP: usize = 64;
+
+#[repr(C)]
+struct Store {
+    magic: u32,
+    loc: [u8; REPORT_CAP],
+    loc_len: u32,
+    msg: [u8; REPORT_CAP],
+    msg_len: u32,
+}
+
+#[unsafe(link_section = ".uninit.PANIC_STORE")]
+static mut STORE: MaybeUninit<Store> = MaybeUninit::uninit();
+
+struct Buf<'a> {
+    buf: &'a mut [u8],
+    len: usize,
+}
+
+impl core::fmt::Write for Buf<'_> {
+    fn write_str(&mut self, s: &str) -> core::fmt::Result {
+        let take = s.len().min(self.buf.len() - self.len);
+        self.buf[self.len..self.len + take].copy_from_slice(&s.as_bytes()[..take]);
+        self.len += take;
+        Ok(())
+    }
+}
+
+fn record(loc: core::fmt::Arguments<'_>, msg: core::fmt::Arguments<'_>) -> ! {
+    cortex_m::interrupt::disable();
+    let store = unsafe { (*addr_of_mut!(STORE)).write(core::mem::zeroed()) };
+    let mut b = Buf {
+        buf: &mut store.loc,
+        len: 0,
+    };
+    let _ = b.write_fmt(loc);
+    store.loc_len = b.len as u32;
+    let mut b = Buf {
+        buf: &mut store.msg,
+        len: 0,
+    };
+    let _ = b.write_fmt(msg);
+    store.msg_len = b.len as u32;
+    store.magic = MAGIC;
+    core::sync::atomic::compiler_fence(core::sync::atomic::Ordering::SeqCst);
+    cortex_m::peripheral::SCB::sys_reset();
+}
+
+#[panic_handler]
+fn on_panic(info: &PanicInfo) -> ! {
+    match info.location() {
+        // Keep the informative tail of a long path plus the line number.
+        Some(l) => {
+            let file = l.file();
+            let tail = &file[file.len().saturating_sub(48)..];
+            record(
+                format_args!("{}:{}", tail, l.line()),
+                format_args!("{}", info.message()),
+            )
+        }
+        None => record(format_args!("unknown"), format_args!("{}", info.message())),
+    }
+}
+
+#[cortex_m_rt::exception]
+unsafe fn HardFault(ef: &cortex_m_rt::ExceptionFrame) -> ! {
+    record(
+        format_args!("HARDFAULT pc={:#010x}", ef.pc()),
+        format_args!("lr={:#010x} xpsr={:#010x}", ef.lr(), ef.xpsr()),
+    )
+}
+
+#[derive(Clone)]
+pub struct LastPanic {
+    pub loc: heapless::String<REPORT_CAP>,
+    pub msg: heapless::String<REPORT_CAP>,
+}
+
+static LAST: BlockingMutex<rmk::RawMutex, RefCell<Option<LastPanic>>> =
+    BlockingMutex::new(RefCell::new(None));
+
+fn read_slice(bytes: &[u8; REPORT_CAP], len: u32) -> heapless::String<REPORT_CAP> {
+    let len = (len as usize).min(REPORT_CAP);
+    let mut out = heapless::String::new();
+    if let Ok(s) = core::str::from_utf8(&bytes[..len]) {
+        let _ = out.push_str(s);
+    }
+    out
+}
+
+/// Move a persisted crash report out of the uninit store. Call once early
+/// in boot, before anything can panic concurrently.
+pub fn capture_boot() {
+    let p = unsafe { &mut *addr_of_mut!(STORE) }.as_mut_ptr();
+    let magic = unsafe { core::ptr::read_volatile(addr_of!((*p).magic)) };
+    if magic != MAGIC {
+        return;
+    }
+    let report = unsafe {
+        LastPanic {
+            loc: read_slice(&(*p).loc, (*p).loc_len),
+            msg: read_slice(&(*p).msg, (*p).msg_len),
+        }
+    };
+    unsafe { core::ptr::write_volatile(addr_of_mut!((*p).magic), 0) };
+    LAST.lock(|slot| slot.borrow_mut().replace(report));
+}
+
+/// The report captured at this boot, if the previous run crashed.
+pub fn last_panic() -> Option<LastPanic> {
+    LAST.lock(|slot| slot.borrow().clone())
+}

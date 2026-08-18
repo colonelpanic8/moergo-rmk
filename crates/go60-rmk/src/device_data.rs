@@ -2,7 +2,7 @@ use rmk::types::protocol::rynk::{
     DeviceDataDescriptor, DeviceDataRecord, DeviceDataValue, DeviceDataVolatility,
 };
 
-const RECORD_COUNT: u8 = 6;
+const RECORD_COUNT: u8 = 8;
 
 pub fn descriptor() -> DeviceDataDescriptor {
     DeviceDataDescriptor {
@@ -65,6 +65,24 @@ pub fn record_at(index: u8) -> Option<DeviceDataRecord> {
                 rmk::split::selector::FORCE_BLE => "ble",
                 _ => "auto",
             }),
+        )),
+        6 => Some(record(
+            "debug.lastPanicLoc",
+            DeviceDataVolatility::Static,
+            text(
+                crate::panic_store::last_panic()
+                    .as_ref()
+                    .map_or("none", |p| p.loc.as_str()),
+            ),
+        )),
+        7 => Some(record(
+            "debug.lastPanicMsg",
+            DeviceDataVolatility::Static,
+            text(
+                crate::panic_store::last_panic()
+                    .as_ref()
+                    .map_or("none", |p| p.msg.as_str()),
+            ),
         )),
         _ => None,
     }

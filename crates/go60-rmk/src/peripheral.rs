@@ -15,6 +15,8 @@ pub const BOARD_SPLIT_TRANSPORT_LED: u16 = 6;
 #[allow(dead_code)]
 #[path = "../../moergo-rmk/src/lighting.rs"]
 mod lighting;
+#[path = "../../moergo-rmk/src/panic_store.rs"]
+mod panic_store;
 #[allow(dead_code)]
 #[path = "../../moergo-rmk/src/split_lighting.rs"]
 mod split_lighting;

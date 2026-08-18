@@ -17,6 +17,8 @@ mod central_lighting;
 #[allow(dead_code)]
 #[path = "../../moergo-rmk/src/lighting.rs"]
 mod lighting;
+#[path = "../../moergo-rmk/src/panic_store.rs"]
+mod panic_store;
 #[path = "../../moergo-rmk/src/remote_boot.rs"]
 mod remote_boot;
 #[allow(dead_code)]
@@ -29,6 +31,8 @@ mod keyboard_central {
     #[Overwritten(host_service)]
     fn host_service() {
         use core::fmt::Write as _;
+
+        crate::panic_store::capture_boot();
 
         let dirty = if env!("MOERGO_REPO_GIT_DIRTY") == "1" {
             "-dirty"

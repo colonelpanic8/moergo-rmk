@@ -33,6 +33,7 @@ nrf-mpsl = { git = "https://github.com/colonelpanic8/nrf-sdc", rev = "202600e31f
 bt-hci = { version = "0.9", features = ["defmt"] }
 rmk-palettefx = { path = "../../dependencies/rmk-palettefx", features = ["rmk-lighting"] }
 
+panic-probe = { path = "panic-probe-stub" }
 cortex-m = "0.7.7"
 cortex-m-rt = "0.7.5"
 embassy-futures = "0.1"
@@ -55,7 +56,6 @@ embassy-executor = { version = "0.10", features = [
 ] }
 defmt = "1"
 defmt-rtt = "1"
-panic-probe = { version = "1", features = ["print-defmt"] }
 static_cell = "2"
 
 [patch."https://github.com/colonelpanic8/rmk"]
