@@ -733,6 +733,10 @@ impl Runnable for CentralReplication {
                         Ok(message @ crate::split_lighting::Message::FrameChunk { .. }) => {
                             let _ = FRAME_RESPONSES.try_send(message);
                         }
+                        Ok(crate::split_lighting::Message::TransportStatus { auto, wired }) => {
+                            PERIPHERAL_TRANSPORT
+                                .lock(|slot| slot.set(Some(PeripheralTransport { auto, wired })));
+                        }
                         _ => {}
                     }
                 }
