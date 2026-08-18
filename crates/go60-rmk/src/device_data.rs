@@ -13,7 +13,15 @@ pub fn descriptor() -> DeviceDataDescriptor {
 }
 
 fn text(value: &str) -> DeviceDataValue {
-    DeviceDataValue::Text(value.try_into().unwrap())
+    // Truncate rather than panic: a diagnostic string that outgrows the
+    // protocol's text field must not take the keyboard down with it.
+    let mut out = heapless::String::new();
+    for c in value.chars() {
+        if out.push(c).is_err() {
+            break;
+        }
+    }
+    DeviceDataValue::Text(out)
 }
 
 fn record(key: &str, volatility: DeviceDataVolatility, value: DeviceDataValue) -> DeviceDataRecord {
@@ -36,7 +44,7 @@ fn peripheral_trace_text() -> heapless::String<96> {
             // and completed TX counts; cause carries RX bytes and good frames.
             let _ = write!(
                 out,
-                "boots={} wired={} rx={} ok={} bad={} err/cancel={:#x} tx={}/{}",
+                "b={} w={} rx={} ok={} bad={} ec={:#x} tx={}/{}",
                 d.boots,
                 d.rr[0] >> 16,
                 d.cause[0],
@@ -148,7 +156,7 @@ fn wired_counter_text() -> heapless::String<64> {
     let mut out = heapless::String::new();
     let _ = write!(
         out,
-        "wired={} rx={} ok={} bad={} err={} cancel={} tx={}/{}",
+        "w={} rx={} ok={} bad={} e={} c={} tx={}/{}",
         rmk::split::selector::wired_entries(),
         rx,
         ok,
