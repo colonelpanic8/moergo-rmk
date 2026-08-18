@@ -33,7 +33,7 @@ use rmk_palettefx::rmk_lighting::{
 
 mod lighting_output;
 
-use lighting_output::{frame_visible, limit_channel};
+use lighting_output::{chain_should_power, frame_visible, limit_channel};
 
 /// Board-wide lighting topology for both binaries. `#[rmk_central]` emits
 /// `crate::LIGHTING_TOPOLOGY` for the central, but the peripheral macro only
@@ -374,7 +374,13 @@ fn update_chain_power(usb_powered: bool, sleeping: bool) -> Option<Instant> {
     CHAIN_POWER.lock(|state| {
         let mut state = state.borrow_mut();
         let state = state.as_mut()?;
-        let should_power = !sleeping && (usb_powered || state.frame_visible);
+        let should_power = chain_should_power(
+            usb_powered,
+            sleeping,
+            state.frame_visible,
+            crate::BOARD_KEEP_LED_POWER_WHILE_AWAKE,
+            crate::BOARD_KEEP_LED_POWER_WHILE_SUSPENDED,
+        );
         match (state.powered_at, should_power) {
             (None, true) => {
                 state.pin.set_high();
@@ -525,6 +531,15 @@ impl LightingOutput<LogicalFrame<Rgb8, TOTAL_LEDS>> for HalfOutput {
     }
 
     async fn suspend(&mut self) -> Result<(), Self::Error> {
+        if crate::BOARD_KEEP_LED_POWER_WHILE_SUSPENDED {
+            // The rail stays asserted through suspend, so the chain must be
+            // latched dark explicitly before rendering stops.
+            return self
+                .hardware
+                .write(&[Rgb8::BLACK; LEDS_PER_HALF])
+                .await
+                .map_err(|_| OutputError::Spi);
+        }
         set_chain_frame_visible(false);
         power_down_chain();
         Ok(())

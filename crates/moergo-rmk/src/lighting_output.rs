@@ -11,3 +11,17 @@ pub fn frame_visible(frame: &[Rgb8], ceiling: u8) -> bool {
             || limit_channel(pixel.b, ceiling) != 0
     })
 }
+
+pub const fn chain_should_power(
+    usb_powered: bool,
+    sleeping: bool,
+    frame_visible: bool,
+    keep_power_while_awake: bool,
+    keep_power_while_suspended: bool,
+) -> bool {
+    if sleeping {
+        keep_power_while_suspended
+    } else {
+        keep_power_while_awake || usb_powered || frame_visible
+    }
+}
