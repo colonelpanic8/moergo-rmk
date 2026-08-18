@@ -2,7 +2,7 @@ use rmk::types::protocol::rynk::{
     DeviceDataDescriptor, DeviceDataRecord, DeviceDataValue, DeviceDataVolatility,
 };
 
-const RECORD_COUNT: u8 = 11;
+const RECORD_COUNT: u8 = 12;
 
 pub fn descriptor() -> DeviceDataDescriptor {
     DeviceDataDescriptor {
@@ -24,7 +24,7 @@ fn record(key: &str, volatility: DeviceDataVolatility, value: DeviceDataValue) -
     }
 }
 
-fn peripheral_trace_text() -> heapless::String<64> {
+fn peripheral_trace_text() -> heapless::String<96> {
     use core::fmt::Write as _;
     let mut out = heapless::String::new();
     match crate::central_lighting::peripheral_debug() {
@@ -32,10 +32,20 @@ fn peripheral_trace_text() -> heapless::String<64> {
             let _ = out.push_str("none");
         }
         Some(d) => {
+            // cause[0] is the peripheral's RX byte count; cause[1] packs
+            // wired-entry, frame-ok, frame-bad and TX counts one byte each.
+            let packed = d.cause[1];
             let _ = write!(
                 out,
-                "stage={} boots={} rr={:#x},{:#x} cause={},{}",
-                d.stage, d.boots, d.rr[0], d.rr[1], d.cause[0], d.cause[1]
+                "stage={} boots={} rr={:#x} wired={} rx={} ok={} bad={} tx={}",
+                d.stage,
+                d.boots,
+                d.rr[0],
+                packed >> 24,
+                d.cause[0],
+                (packed >> 16) & 0xff,
+                (packed >> 8) & 0xff,
+                packed & 0xff
             );
         }
     }
@@ -122,6 +132,29 @@ pub fn record_at(index: u8) -> Option<DeviceDataRecord> {
                     .unwrap_or("none"),
             ),
         )),
+        11 => Some(record(
+            "split.wired.counters",
+            DeviceDataVolatility::Live,
+            text(wired_counter_text().as_str()),
+        )),
         _ => None,
     }
+}
+
+/// This half's wired-link traffic, so a dead cable link can be read straight
+/// off the central over USB while the split link itself is down.
+fn wired_counter_text() -> heapless::String<64> {
+    use core::fmt::Write as _;
+    let (rx, ok, bad, tx) = rmk::split::serial::counters::snapshot();
+    let mut out = heapless::String::new();
+    let _ = write!(
+        out,
+        "wired={} rx={} ok={} bad={} tx={}",
+        rmk::split::selector::wired_entries(),
+        rx,
+        ok,
+        bad,
+        tx
+    );
+    out
 }
