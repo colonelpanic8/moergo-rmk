@@ -1,9 +1,9 @@
 //! Persist the last panic across resets so a crash-looping half can be
 //! interrogated over Rynk after it comes back up.
 //!
-//! The store lives in a `.uninit` RAM section, which `cortex-m-rt` neither
-//! zeroes nor copies at boot, so it survives both `SCB::sys_reset` and a
-//! watchdog reset. The panic handler formats location and message into it
+//! The store lives at a fixed address above the app's RAM (see `memory.x`),
+//! untouched by init, so it survives both `SCB::sys_reset` and a watchdog
+//! reset — and its location is identical across builds. The panic handler formats location and message into it
 //! and reboots immediately (no halt-until-watchdog); the next boot that
 //! reaches [`capture_boot`] moves the report into ordinary memory and
 //! clears the marker, so one report describes exactly one crash.
@@ -13,9 +13,7 @@
 
 use core::cell::RefCell;
 use core::fmt::Write as _;
-use core::mem::MaybeUninit;
 use core::panic::PanicInfo;
-use core::ptr::{addr_of, addr_of_mut};
 
 use embassy_sync::blocking_mutex::Mutex as BlockingMutex;
 
@@ -31,8 +29,13 @@ struct Store {
     msg_len: u32,
 }
 
-#[unsafe(link_section = ".uninit.PANIC_STORE")]
-static mut STORE: MaybeUninit<Store> = MaybeUninit::uninit();
+/// Fixed address carved out of the top of app RAM by `memory.x`, so every
+/// build — crashing or reading — agrees on where the report lives.
+const STORE_ADDR: usize = 0x2003_FB08;
+
+fn store_ptr() -> *mut Store {
+    STORE_ADDR as *mut Store
+}
 
 struct Buf<'a> {
     buf: &'a mut [u8],
@@ -50,7 +53,10 @@ impl core::fmt::Write for Buf<'_> {
 
 fn record(loc: core::fmt::Arguments<'_>, msg: core::fmt::Arguments<'_>) -> ! {
     cortex_m::interrupt::disable();
-    let store = unsafe { (*addr_of_mut!(STORE)).write(core::mem::zeroed()) };
+    let store = unsafe {
+        core::ptr::write_volatile(store_ptr(), core::mem::zeroed());
+        &mut *store_ptr()
+    };
     let mut b = Buf {
         buf: &mut store.loc,
         len: 0,
@@ -113,8 +119,8 @@ fn read_slice(bytes: &[u8; REPORT_CAP], len: u32) -> heapless::String<REPORT_CAP
 /// Move a persisted crash report out of the uninit store. Call once early
 /// in boot, before anything can panic concurrently.
 pub fn capture_boot() {
-    let p = unsafe { &mut *addr_of_mut!(STORE) }.as_mut_ptr();
-    let magic = unsafe { core::ptr::read_volatile(addr_of!((*p).magic)) };
+    let p = store_ptr();
+    let magic = unsafe { core::ptr::read_volatile(core::ptr::addr_of!((*p).magic)) };
     if magic != MAGIC {
         return;
     }
@@ -124,7 +130,7 @@ pub fn capture_boot() {
             msg: read_slice(&(*p).msg, (*p).msg_len),
         }
     };
-    unsafe { core::ptr::write_volatile(addr_of_mut!((*p).magic), 0) };
+    unsafe { core::ptr::write_volatile(core::ptr::addr_of_mut!((*p).magic), 0) };
     LAST.lock(|slot| slot.borrow_mut().replace(report));
 }
 
