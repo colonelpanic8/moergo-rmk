@@ -181,6 +181,9 @@ pub fn boot_mark() {
         if core::ptr::read_volatile(core::ptr::addr_of!((*p).magic)) != STAMP_MAGIC {
             core::ptr::write_volatile(p, core::mem::zeroed());
             core::ptr::write_volatile(core::ptr::addr_of_mut!((*p).magic), STAMP_MAGIC);
+            // The cause ring lives outside this struct; scrub its power-on garbage.
+            core::ptr::write_volatile(0x2003_FBB0usize as *mut u32, 0);
+            core::ptr::write_volatile(0x2003_FBB4usize as *mut u32, 0);
         }
         let prev = core::ptr::read_volatile(core::ptr::addr_of!((*p).resetreas[0]));
         core::ptr::write_volatile(core::ptr::addr_of_mut!((*p).resetreas[1]), prev);

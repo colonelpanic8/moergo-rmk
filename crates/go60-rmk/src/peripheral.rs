@@ -26,6 +26,7 @@ use rmk::macros::rmk_peripheral;
 mod keyboard_peripheral {
     #[register_processor(runnable)]
     fn lighting_processor() {
+        crate::panic_store::boot_mark();
         crate::lighting::init_peripheral(p.SPI3, p.P0_27, p.P1_11)
     }
 
