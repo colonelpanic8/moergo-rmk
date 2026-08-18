@@ -60,3 +60,7 @@ mod keyboard_peripheral {
         crate::lighting::ReactiveKeyHits::peripheral()
     }
 }
+
+pub fn debug_stamp(stage: u32) {
+    let _ = stage;
+}

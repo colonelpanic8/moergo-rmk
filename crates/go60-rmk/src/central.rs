@@ -32,7 +32,9 @@ mod keyboard_central {
     fn host_service() {
         use core::fmt::Write as _;
 
+        crate::panic_store::boot_mark();
         crate::panic_store::capture_boot();
+        crate::panic_store::stamp(1);
 
         let dirty = if env!("MOERGO_REPO_GIT_DIRTY") == "1" {
             "-dirty"
@@ -69,6 +71,7 @@ mod keyboard_central {
 
     #[register_processor(runnable)]
     fn lighting_processor() {
+        crate::panic_store::stamp(2);
         let mut persisted_scenes = ::rmk::heapless::Vec::<
             ::rmk::types::protocol::rynk::LightingSceneCell,
             { crate::lighting::SCENE_CAPACITY },
@@ -97,31 +100,37 @@ mod keyboard_central {
 
     #[register_processor(runnable)]
     fn lighting_rynk_adapter() {
+        crate::panic_store::stamp(3);
         crate::central_lighting::rynk_adapter()
     }
 
     #[register_processor(runnable)]
     fn lighting_replication() {
+        crate::panic_store::stamp(4);
         crate::central_lighting::replication()
     }
 
     #[register_processor(runnable)]
     fn remote_frame_bridge() {
+        crate::panic_store::stamp(5);
         crate::central_lighting::remote_frame_bridge()
     }
 
     #[register_processor(runnable)]
     fn remote_boot_dispatcher() {
+        crate::panic_store::stamp(6);
         crate::central_lighting::RemoteBootDispatcher
     }
 
     #[register_processor(runnable)]
     fn split_transport_lighting_nudge() {
+        crate::panic_store::stamp(7);
         crate::central_lighting::SplitTransportLightingNudge
     }
 
     #[register_processor(runnable)]
     fn trackpad_device() {
+        crate::panic_store::stamp(8);
         crate::trackpad::init(
             crate::trackpad::LEFT_DEVICE_ID,
             p.TWISPI1,
@@ -173,4 +182,8 @@ mod keyboard_central {
     fn reactive_key_hits() {
         crate::lighting::ReactiveKeyHits::central()
     }
+}
+
+pub fn debug_stamp(stage: u32) {
+    crate::panic_store::stamp(stage);
 }

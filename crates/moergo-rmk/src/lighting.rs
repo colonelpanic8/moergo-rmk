@@ -137,6 +137,7 @@ impl BoardStatus {
 
 impl LightingSource<Rgb8, LightingContext> for BoardStatus {
     fn len(&self, input: &RenderInput<'_, LightingContext>) -> usize {
+        crate::debug_stamp(13);
         self.compiled.len(input)
             + usize::from(Self::maintenance_visible(input))
             + usize::from(Self::split_transport_visible(input))

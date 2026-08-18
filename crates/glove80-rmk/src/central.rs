@@ -151,3 +151,7 @@ mod keyboard_central {
         crate::lighting::ReactiveKeyHits::central()
     }
 }
+
+pub fn debug_stamp(stage: u32) {
+    let _ = stage;
+}

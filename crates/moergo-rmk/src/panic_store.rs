@@ -138,3 +138,73 @@ pub fn capture_boot() {
 pub fn last_panic() -> Option<LastPanic> {
     LAST.lock(|slot| slot.borrow().clone())
 }
+
+// --- boot trace: stage breadcrumbs + reset causes, next to the store ---
+
+const STAMP_MAGIC: u32 = 0x53544d50;
+
+#[repr(C)]
+struct Stamps {
+    magic: u32,
+    stage: u32,
+    boots: u32,
+    resetreas: [u32; 2],
+}
+
+fn stamps_ptr() -> *mut Stamps {
+    (STORE_ADDR + 0x90) as *mut Stamps
+}
+
+/// Record the highest boot milestone reached. Survives a watchdog reset, so
+/// after a silent hang the persisted stage brackets where execution stopped.
+pub fn stamp(stage: u32) {
+    unsafe {
+        let p = stamps_ptr();
+        if core::ptr::read_volatile(core::ptr::addr_of!((*p).magic)) != STAMP_MAGIC {
+            core::ptr::write_volatile(p, core::mem::zeroed());
+            core::ptr::write_volatile(core::ptr::addr_of_mut!((*p).magic), STAMP_MAGIC);
+        }
+        core::ptr::write_volatile(core::ptr::addr_of_mut!((*p).stage), stage);
+    }
+}
+
+/// Roll this boot into the trace: bump the boot counter and shift in the
+/// hardware reset reason (bit 1 = watchdog), clearing it for the next run.
+pub fn boot_mark() {
+    const RESETREAS: *mut u32 = 0x4000_0400 as *mut u32;
+    unsafe {
+        let reas = core::ptr::read_volatile(RESETREAS);
+        core::ptr::write_volatile(RESETREAS, 0xFFFF_FFFF);
+        let p = stamps_ptr();
+        if core::ptr::read_volatile(core::ptr::addr_of!((*p).magic)) != STAMP_MAGIC {
+            core::ptr::write_volatile(p, core::mem::zeroed());
+            core::ptr::write_volatile(core::ptr::addr_of_mut!((*p).magic), STAMP_MAGIC);
+        }
+        let prev = core::ptr::read_volatile(core::ptr::addr_of!((*p).resetreas[0]));
+        core::ptr::write_volatile(core::ptr::addr_of_mut!((*p).resetreas[1]), prev);
+        core::ptr::write_volatile(core::ptr::addr_of_mut!((*p).resetreas[0]), reas);
+        let boots = core::ptr::read_volatile(core::ptr::addr_of!((*p).boots));
+        core::ptr::write_volatile(core::ptr::addr_of_mut!((*p).boots), boots.wrapping_add(1));
+    }
+}
+
+/// Render the persisted trace: `stage=N boots=N rr=this,prev`.
+pub fn boot_trace() -> heapless::String<REPORT_CAP> {
+    let mut out = heapless::String::new();
+    unsafe {
+        let p = stamps_ptr();
+        if core::ptr::read_volatile(core::ptr::addr_of!((*p).magic)) == STAMP_MAGIC {
+            let _ = write!(
+                out,
+                "stage={} boots={} rr={:#x},{:#x}",
+                core::ptr::read_volatile(core::ptr::addr_of!((*p).stage)),
+                core::ptr::read_volatile(core::ptr::addr_of!((*p).boots)),
+                core::ptr::read_volatile(core::ptr::addr_of!((*p).resetreas[0])),
+                core::ptr::read_volatile(core::ptr::addr_of!((*p).resetreas[1])),
+            );
+        } else {
+            let _ = out.push_str("no trace");
+        }
+    }
+    out
+}

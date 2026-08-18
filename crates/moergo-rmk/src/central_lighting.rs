@@ -776,6 +776,7 @@ pub struct SplitTransportLightingNudge;
 
 impl Runnable for SplitTransportLightingNudge {
     async fn run(&mut self) -> ! {
+        crate::debug_stamp(11);
         use rmk::split::selector;
         if !selector::auto_enabled() {
             core::future::pending::<()>().await;
@@ -795,6 +796,7 @@ pub struct RemoteBootDispatcher;
 
 impl Runnable for RemoteBootDispatcher {
     async fn run(&mut self) -> ! {
+        crate::debug_stamp(12);
         loop {
             REMOTE_BOOT_REQUESTS.receive().await;
             let message = SplitAppData::new(&[BOOTLOADER_TAG]).expect("one-byte message");

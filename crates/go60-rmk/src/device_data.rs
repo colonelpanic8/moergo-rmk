@@ -2,7 +2,7 @@ use rmk::types::protocol::rynk::{
     DeviceDataDescriptor, DeviceDataRecord, DeviceDataValue, DeviceDataVolatility,
 };
 
-const RECORD_COUNT: u8 = 8;
+const RECORD_COUNT: u8 = 9;
 
 pub fn descriptor() -> DeviceDataDescriptor {
     DeviceDataDescriptor {
@@ -83,6 +83,11 @@ pub fn record_at(index: u8) -> Option<DeviceDataRecord> {
                     .as_ref()
                     .map_or("none", |p| p.msg.as_str()),
             ),
+        )),
+        8 => Some(record(
+            "debug.bootTrace",
+            DeviceDataVolatility::Live,
+            text(crate::panic_store::boot_trace().as_str()),
         )),
         _ => None,
     }
