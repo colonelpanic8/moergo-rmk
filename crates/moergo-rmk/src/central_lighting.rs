@@ -644,7 +644,6 @@ impl Runnable for CentralReplication {
                 Either4::First(up) => {
                     link_up = up;
                     awaiting_ack = None;
-                    PERIPHERAL_TRANSPORT.lock(|slot| slot.set(None));
                     // Replicate directly on reconnect. Probing first observes the
                     // peripheral's necessarily stale pre-sync digest and feeds a
                     // full-resync loop that can starve the hardware watchdog.
@@ -733,10 +732,6 @@ impl Runnable for CentralReplication {
                         ),
                         Ok(message @ crate::split_lighting::Message::FrameChunk { .. }) => {
                             let _ = FRAME_RESPONSES.try_send(message);
-                        }
-                        Ok(crate::split_lighting::Message::TransportStatus { auto, wired }) => {
-                            PERIPHERAL_TRANSPORT
-                                .lock(|slot| slot.set(Some(PeripheralTransport { auto, wired })));
                         }
                         _ => {}
                     }
