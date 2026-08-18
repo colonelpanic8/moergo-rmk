@@ -103,6 +103,16 @@ pub fn peripheral_transport() -> Option<PeripheralTransport> {
     PERIPHERAL_TRANSPORT.lock(Cell::get)
 }
 
+#[inline(never)]
+fn record_peripheral_transport(auto: bool, wired: bool) {
+    PERIPHERAL_TRANSPORT.lock(|slot| slot.set(Some(PeripheralTransport { auto, wired })));
+}
+
+#[inline(never)]
+fn clear_peripheral_transport() {
+    PERIPHERAL_TRANSPORT.lock(|slot| slot.set(None));
+}
+
 pub struct BoardReplicationStatus;
 
 static REPLICATION_STATUS: BoardReplicationStatus = BoardReplicationStatus;
@@ -734,8 +744,7 @@ impl Runnable for CentralReplication {
                             let _ = FRAME_RESPONSES.try_send(message);
                         }
                         Ok(crate::split_lighting::Message::TransportStatus { auto, wired }) => {
-                            PERIPHERAL_TRANSPORT
-                                .lock(|slot| slot.set(Some(PeripheralTransport { auto, wired })));
+                            record_peripheral_transport(auto, wired)
                         }
                         _ => {}
                     }
