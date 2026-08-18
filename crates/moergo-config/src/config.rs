@@ -1926,7 +1926,7 @@ impl RuntimeConfig {
                 .map(|pointing| pointing.to_wire(layer_count))
                 .transpose()?,
             behaviors: BehaviorSnapshot {
-                config: behavior.map(BehaviorConfig::wire_config),
+                config: behavior.map(BehaviorConfig::wire_config).transpose()?,
                 options: behavior.map(BehaviorConfig::wire_options).transpose()?,
                 morse_profiles: behavior.map(|_| morse_profiles.clone()),
                 hold_trigger_positions: behavior.map(|behavior| {
@@ -2164,13 +2164,15 @@ fn action_from_name(text: &str) -> Result<Action> {
 }
 
 impl BehaviorConfig {
-    fn wire_config(&self) -> WireBehaviorConfig {
-        WireBehaviorConfig {
+    fn wire_config(&self) -> Result<WireBehaviorConfig> {
+        Ok(WireBehaviorConfig {
             combo_timeout_ms: self.combo_timeout_ms,
             oneshot_timeout_ms: self.oneshot_timeout_ms,
             tap_interval_ms: self.tap_interval_ms,
             tap_capslock_interval_ms: self.tap_capslock_interval_ms,
-        }
+            morse_default_profile: self.morse.default_profile.to_wire()?,
+            morse_prior_idle_time_ms: self.morse.prior_idle_ms,
+        })
     }
 
     fn wire_options(&self) -> Result<WireBehaviorOptions> {
