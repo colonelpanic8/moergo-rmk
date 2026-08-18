@@ -15,7 +15,7 @@ pub fn descriptor() -> DeviceDataDescriptor {
 fn text(value: &str) -> DeviceDataValue {
     // Truncate rather than panic: a diagnostic string that outgrows the
     // protocol's text field must not take the keyboard down with it.
-    let mut out = heapless::String::new();
+    let mut out: heapless::String<{ rmk::types::protocol::rynk::DEVICE_DATA_TEXT_SIZE }> = heapless::String::new();
     for c in value.chars() {
         if out.push(c).is_err() {
             break;
