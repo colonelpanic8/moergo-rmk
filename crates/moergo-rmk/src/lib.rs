@@ -21,6 +21,13 @@ pub const BOARD_CHANNEL_CEILING: u8 = 230;
 pub const BOARD_CHANNEL_CEILING: u8 = 102;
 
 #[cfg(feature = "glove80")]
+pub const BOARD_KEEP_LED_POWER_WHILE_AWAKE: bool = false;
+// GO60's canonical ZMK firmware treats WS2812_CE as an underglow-state rail,
+// not a per-frame visibility optimization.
+#[cfg(feature = "go60")]
+pub const BOARD_KEEP_LED_POWER_WHILE_AWAKE: bool = true;
+
+#[cfg(feature = "glove80")]
 pub const BOARD_MAINTENANCE_LED: u16 = 12;
 #[cfg(feature = "go60")]
 pub const BOARD_MAINTENANCE_LED: u16 = 8;

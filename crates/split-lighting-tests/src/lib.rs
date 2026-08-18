@@ -69,6 +69,29 @@ fn visibility_uses_the_post_ceiling_output() {
 }
 
 #[test]
+fn go60_keeps_the_led_rail_powered_until_suspend() {
+    assert!(lighting_output::chain_should_power(
+        false, false, false, true
+    ));
+    assert!(!lighting_output::chain_should_power(
+        false, true, true, true
+    ));
+}
+
+#[test]
+fn glove80_retains_the_existing_frame_and_usb_power_policy() {
+    assert!(!lighting_output::chain_should_power(
+        false, false, false, false
+    ));
+    assert!(lighting_output::chain_should_power(
+        true, false, false, false
+    ));
+    assert!(lighting_output::chain_should_power(
+        false, false, true, false
+    ));
+}
+
+#[test]
 fn existing_split_messages_round_trip() {
     let messages = [
         Message::Begin {
