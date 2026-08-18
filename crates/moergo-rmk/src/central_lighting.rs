@@ -128,6 +128,29 @@ pub fn peripheral_debug() -> Option<PeripheralDebug> {
     PERIPHERAL_DEBUG.lock(|slot| slot.borrow().clone())
 }
 
+/// Side-band messages that carry no replication state. Dispatched out of
+/// the replication future entirely: adding arms to the giant match in that
+/// future has twice produced mid-instruction hardfaults, so it keeps a
+/// single catch-all call and all growth happens here.
+#[inline(never)]
+fn record_secondary_message(message: crate::split_lighting::Message) {
+    match message {
+        crate::split_lighting::Message::TransportStatus { auto, wired } => {
+            record_peripheral_transport(auto, wired)
+        }
+        crate::split_lighting::Message::DebugTrace {
+            stage,
+            boots,
+            rr,
+            cause,
+        } => record_peripheral_trace(stage, boots, rr, cause),
+        crate::split_lighting::Message::DebugPanicLoc { len, text } => {
+            record_peripheral_panic_loc(len, text)
+        }
+        _ => {}
+    }
+}
+
 #[inline(never)]
 fn record_peripheral_trace(stage: u32, boots: u32, rr: [u32; 2], cause: [u32; 2]) {
     PERIPHERAL_DEBUG.lock(|slot| {
@@ -792,18 +815,7 @@ impl Runnable for CentralReplication {
                         Ok(message @ crate::split_lighting::Message::FrameChunk { .. }) => {
                             let _ = FRAME_RESPONSES.try_send(message);
                         }
-                        Ok(crate::split_lighting::Message::TransportStatus { auto, wired }) => {
-                            record_peripheral_transport(auto, wired)
-                        }
-                        Ok(crate::split_lighting::Message::DebugTrace {
-                            stage,
-                            boots,
-                            rr,
-                            cause,
-                        }) => record_peripheral_trace(stage, boots, rr, cause),
-                        Ok(crate::split_lighting::Message::DebugPanicLoc { len, text }) => {
-                            record_peripheral_panic_loc(len, text)
-                        }
+                        Ok(message) => record_secondary_message(message),
                         _ => {}
                     }
                 }
