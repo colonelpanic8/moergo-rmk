@@ -53,6 +53,26 @@ fn run() -> Result<()> {
             println!("platform profile sha256: {}", digests.platform_profile);
             Ok(())
         }
+        Some("verify-stock-config") => {
+            let stock = args.next().ok_or("verify-stock-config requires STOCK CONFIGURED")?;
+            let configured = args.next().ok_or("verify-stock-config requires STOCK CONFIGURED")?;
+            let bilateral_thumbs = match args.next().as_deref() {
+                None => false,
+                Some("--allow-bilateral-thumbs") if args.next().is_none() => true,
+                _ => {
+                    return Err(
+                        "verify-stock-config accepts STOCK CONFIGURED [--allow-bilateral-thumbs]".into(),
+                    );
+                }
+            };
+            let digests = config_profile::verify_stock_defaults(
+                &root.join(stock),
+                &root.join(configured),
+                bilateral_thumbs,
+            )?;
+            println!("configuration sha256: {}", digests.configuration);
+            Ok(())
+        }
         Some("inspect-uf2") => {
             let path = args.next().ok_or("inspect-uf2 requires a file")?;
             if args.next().is_some() {
@@ -69,7 +89,7 @@ fn run() -> Result<()> {
             );
             Ok(())
         }
-        _ => Err("usage: cargo run -p xtask -- <check|dist|dist-go60|verify-config-profile STOCK CONFIGURED|inspect-uf2 FILE>".into()),
+        _ => Err("usage: cargo run -p xtask -- <check|dist|dist-go60|verify-config-profile STOCK CONFIGURED|verify-stock-config STOCK CONFIGURED [--allow-bilateral-thumbs]|inspect-uf2 FILE>".into()),
     }
 }
 

@@ -9,7 +9,8 @@ use rynk::rmk_types::ble::BleState as WireBleState;
 use rynk::rmk_types::combo::{Combo, ComboDefinition, MatrixPosition, PositionCombo};
 use rynk::rmk_types::morse::{Morse, MorseMode, MorseProfile, MORSE_PROFILE_NAME_MAX_LEN};
 use rynk::rmk_types::pointing::{
-    CaretConfig as WireCaretConfig, CursorConfig as WireCursorConfig, DragConfig as WireDragConfig,
+    CaretConfig as WireCaretConfig, CursorConfig as WireCursorConfig,
+    CursorRemapConfig as WireCursorRemapConfig, DragConfig as WireDragConfig,
     KeypadConfig as WireKeypadConfig, PointingMode, PressConfig as WirePressConfig,
     ScrollConfig as WireScrollConfig, SniperConfig as WireSniperConfig,
 };
@@ -150,6 +151,10 @@ pub enum PointingModeConfig {
         invert_x: bool,
         #[serde(default)]
         invert_y: bool,
+        /// Optional replacement mouse-button mask for the device's primary
+        /// tap. `2` maps an ordinary tap to the secondary/right button.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        primary_button: Option<u8>,
     },
     Scroll {
         #[serde(default = "one")]
@@ -1378,12 +1383,22 @@ impl PointingModeConfig {
                 multiplier_y,
                 invert_x,
                 invert_y,
-            } => PointingMode::Cursor(WireCursorConfig {
-                multiplier_x,
-                multiplier_y,
-                invert_x,
-                invert_y,
-            }),
+                primary_button,
+            } => {
+                let cursor = WireCursorConfig {
+                    multiplier_x,
+                    multiplier_y,
+                    invert_x,
+                    invert_y,
+                };
+                match primary_button {
+                    Some(primary_button) => PointingMode::CursorRemap(WireCursorRemapConfig {
+                        cursor,
+                        primary_button,
+                    }),
+                    None => PointingMode::Cursor(cursor),
+                }
+            }
             Self::Scroll {
                 multiplier_x,
                 divisor_x,
@@ -1498,6 +1513,14 @@ impl PointingModeConfig {
                 multiplier_y: config.multiplier_y,
                 invert_x: config.invert_x,
                 invert_y: config.invert_y,
+                primary_button: None,
+            },
+            PointingMode::CursorRemap(config) => Self::Cursor {
+                multiplier_x: config.cursor.multiplier_x,
+                multiplier_y: config.cursor.multiplier_y,
+                invert_x: config.cursor.invert_x,
+                invert_y: config.cursor.invert_y,
+                primary_button: Some(config.primary_button),
             },
             PointingMode::Scroll(config) => Self::Scroll {
                 multiplier_x: config.multiplier_x,
@@ -4763,6 +4786,14 @@ keycode_down = 0x81
 keycode_left = 0xAC
 keycode_right = 0xAB
 keycode_tap = 0xAE
+
+[[pointing.override]]
+layer = 0
+device_id = 1
+mode = "cursor"
+multiplier_x = 2
+multiplier_y = 2
+primary_button = 2
 "#;
         let config = RuntimeConfig::from_toml(text).unwrap();
         let snapshot = config.snapshot().unwrap();
@@ -4777,7 +4808,7 @@ keycode_tap = 0xAE
             pointing.devices()[1].mode,
             PointingMode::Cursor(_)
         ));
-        assert_eq!(pointing.overrides().len(), 1);
+        assert_eq!(pointing.overrides().len(), 2);
         match pointing.overrides()[0].mode {
             PointingMode::Keypad(config) => {
                 assert_eq!((config.threshold_x, config.threshold_y), (120, 30));
@@ -4788,6 +4819,16 @@ keycode_tap = 0xAE
                 assert_eq!(config.keycode_tap as u8, 0xAE);
             }
             mode => panic!("expected keypad mode, got {mode:?}"),
+        }
+        match pointing.overrides()[1].mode {
+            PointingMode::CursorRemap(config) => {
+                assert_eq!(
+                    (config.cursor.multiplier_x, config.cursor.multiplier_y),
+                    (2, 2)
+                );
+                assert_eq!(config.primary_button, 2);
+            }
+            mode => panic!("expected cursor remap mode, got {mode:?}"),
         }
 
         let serialized = config.to_toml().unwrap();
