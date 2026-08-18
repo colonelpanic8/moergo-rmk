@@ -68,9 +68,6 @@ const TAG_STATUS_REPORT: u8 = 17;
 const TAG_FRAME_CHUNK_REQUEST: u8 = 18;
 const TAG_FRAME_CHUNK: u8 = 19;
 const TAG_WAKE_LAYERS: u8 = 20;
-/// Peripheral-to-central transport announcement. Additive like effect hits:
-/// an older central ignores the unknown tag.
-const TAG_TRANSPORT_STATUS: u8 = 21;
 
 const BEGIN_LEN: usize = 26;
 const WAKE_LAYERS_LEN: usize = 15;
@@ -93,7 +90,6 @@ const REPLICA_PROBE_LEN: usize = 3;
 const STATUS_REQUEST_LEN: usize = 3;
 const STATUS_REPORT_LEN: usize = 23;
 const FRAME_CHUNK_REQUEST_LEN: usize = 5;
-const TRANSPORT_STATUS_LEN: usize = 4;
 const FRAME_CHUNK_CELLS: usize = 4;
 const FRAME_CHUNK_LEN: usize = 25;
 const _: () = assert!(CELL_LEN <= SPLIT_APP_MSG_MAX);
@@ -259,13 +255,6 @@ pub enum Message {
         start: u16,
         len: u8,
         cells: [Rgb8; FRAME_CHUNK_CELLS],
-    },
-    /// The peripheral's split-transport selection, sent on link-up and on
-    /// every cable-detect edge. `auto` is false on boards without an
-    /// automatic wired/BLE policy, where `wired` carries no information.
-    TransportStatus {
-        auto: bool,
-        wired: bool,
     },
 }
 
@@ -858,12 +847,6 @@ impl Message {
                 }
                 FRAME_CHUNK_LEN
             }
-            Message::TransportStatus { auto, wired } => {
-                out[1] = TAG_TRANSPORT_STATUS;
-                out[2] = auto as u8;
-                out[3] = wired as u8;
-                TRANSPORT_STATUS_LEN
-            }
         };
         SplitAppData::new(&out[..len]).expect("semantic lighting packet is bounded")
     }
@@ -1275,12 +1258,6 @@ impl Message {
                     cells,
                 })
             }
-            TAG_TRANSPORT_STATUS if bytes.len() == TRANSPORT_STATUS_LEN => {
-                Ok(Message::TransportStatus {
-                    auto: flag(bytes[2])?,
-                    wired: flag(bytes[3])?,
-                })
-            }
             TAG_BEGIN
             | TAG_CONTEXT
             | TAG_CELL
@@ -1299,8 +1276,7 @@ impl Message {
             | TAG_STATUS_REQUEST
             | TAG_STATUS_REPORT
             | TAG_FRAME_CHUNK_REQUEST
-            | TAG_FRAME_CHUNK
-            | TAG_TRANSPORT_STATUS => Err(DecodeError::Length),
+            | TAG_FRAME_CHUNK => Err(DecodeError::Length),
             _ => Err(DecodeError::Tag),
         }
     }
@@ -2025,7 +2001,6 @@ impl SnapshotStage {
             | Message::StatusReport { .. }
             | Message::FrameChunkRequest { .. }
             | Message::FrameChunk { .. }
-            | Message::TransportStatus { .. }
             | Message::ContextUpdate { .. }
             | Message::Begin { .. } => None,
         }

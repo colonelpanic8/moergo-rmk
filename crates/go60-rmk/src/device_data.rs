@@ -50,12 +50,7 @@ pub fn record_at(index: u8) -> Option<DeviceDataRecord> {
         4 => Some(record(
             "split.peripheral.activeTransport",
             DeviceDataVolatility::Live,
-            text(match crate::central_lighting::peripheral_transport() {
-                None => "unknown",
-                Some(report) if !report.auto => "fixed",
-                Some(report) if report.wired => "wired",
-                Some(_) => "ble",
-            }),
+            text("unknown"), // bisect-B
         )),
         5 => Some(record(
             "split.force",
