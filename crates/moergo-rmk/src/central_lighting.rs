@@ -100,6 +100,12 @@ static PERIPHERAL_TRANSPORT: BlockingMutex<rmk::RawMutex, Cell<Option<Peripheral
     BlockingMutex::new(Cell::new(None));
 
 pub fn peripheral_transport() -> Option<PeripheralTransport> {
+    // A report is only as fresh as the split session it arrived on; with the
+    // link down, answer "unknown" instead of clearing state from inside the
+    // replication loop (arm bodies in that future must stay minimal).
+    if !OBSERVABILITY_CACHE.lock(|cache| cache.get().machine.link_up) {
+        return None;
+    }
     PERIPHERAL_TRANSPORT.lock(Cell::get)
 }
 
@@ -108,10 +114,7 @@ fn record_peripheral_transport(auto: bool, wired: bool) {
     PERIPHERAL_TRANSPORT.lock(|slot| slot.set(Some(PeripheralTransport { auto, wired })));
 }
 
-#[inline(never)]
-fn clear_peripheral_transport() {
-    PERIPHERAL_TRANSPORT.lock(|slot| slot.set(None));
-}
+
 
 pub struct BoardReplicationStatus;
 
@@ -654,7 +657,6 @@ impl Runnable for CentralReplication {
                 Either4::First(up) => {
                     link_up = up;
                     awaiting_ack = None;
-                    clear_peripheral_transport();
                     // Replicate directly on reconnect. Probing first observes the
                     // peripheral's necessarily stale pre-sync digest and feeds a
                     // full-resync loop that can starve the hardware watchdog.
