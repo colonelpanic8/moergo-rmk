@@ -130,8 +130,8 @@ impl BoardStatus {
         input.context.layers.is_active(MAGIC_LAYER)
     }
 
-    fn split_transport_visible(input: &RenderInput<'_, LightingContext>) -> bool {
-        input.context.layers.is_active(MAGIC_LAYER) && rmk::split::selector::auto_enabled()
+    fn split_transport_visible(_input: &RenderInput<'_, LightingContext>) -> bool {
+        false // bisect-G: B-cell off
     }
 }
 
