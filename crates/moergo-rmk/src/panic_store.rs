@@ -130,7 +130,9 @@ pub fn capture_boot() {
             msg: read_slice(&(*p).msg, (*p).msg_len),
         }
     };
-    unsafe { core::ptr::write_volatile(core::ptr::addr_of_mut!((*p).magic), 0) };
+    // Deliberately left uncleared: in a crash loop the final iteration exits
+    // via the bootloader rather than a panic, so clearing here would discard
+    // the only surviving report before a stable image can read it.
     LAST.lock(|slot| slot.borrow_mut().replace(report));
 }
 
