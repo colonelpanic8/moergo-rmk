@@ -7,6 +7,8 @@ mod trackpad;
 pub const BOARD_LEDS_PER_HALF: usize = 30;
 pub const BOARD_SCENE_CAPACITY: usize = 80;
 pub const BOARD_CHANNEL_CEILING: u8 = 102;
+pub const BOARD_KEEP_LED_POWER_WHILE_AWAKE: bool = true;
+pub const BOARD_KEEP_LED_POWER_WHILE_SUSPENDED: bool = true;
 pub const BOARD_MAINTENANCE_LED: u16 = 8;
 
 #[path = "../../moergo-rmk/src/central_lighting.rs"]

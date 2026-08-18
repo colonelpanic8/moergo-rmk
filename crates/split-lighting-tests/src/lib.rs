@@ -36,6 +36,9 @@ mod lighting {
 #[path = "../../moergo-rmk/src/split_lighting.rs"]
 mod split_lighting;
 
+#[path = "../../moergo-rmk/src/lighting_output.rs"]
+mod lighting_output;
+
 use lighting::BatteryPair;
 use split_lighting::{
     AttestationDecision, AttestationRecovery, DecodeError, FrameChunkDecision, FramePageAssembly,
@@ -55,6 +58,46 @@ fn mutable() -> StandardMutableState {
             mode: BackgroundMode::Breathe,
         },
     }
+}
+
+#[test]
+fn visibility_uses_the_post_ceiling_output() {
+    let reactive_idle = [Rgb8::new(0, 0, 1)];
+    assert!(!lighting_output::frame_visible(&reactive_idle, 102));
+    assert!(lighting_output::frame_visible(&reactive_idle, 230));
+    assert!(lighting_output::frame_visible(&[Rgb8::new(0, 0, 2)], 102));
+}
+
+#[test]
+fn go60_keeps_the_led_rail_powered_through_suspend() {
+    assert!(lighting_output::chain_should_power(
+        false, false, false, true, true
+    ));
+    assert!(lighting_output::chain_should_power(
+        false, true, false, true, true
+    ));
+    assert!(lighting_output::chain_should_power(
+        false, true, true, true, true
+    ));
+}
+
+#[test]
+fn glove80_retains_the_existing_frame_and_usb_power_policy() {
+    assert!(!lighting_output::chain_should_power(
+        false, false, false, false, false
+    ));
+    assert!(lighting_output::chain_should_power(
+        true, false, false, false, false
+    ));
+    assert!(lighting_output::chain_should_power(
+        false, false, true, false, false
+    ));
+    assert!(!lighting_output::chain_should_power(
+        false, true, true, false, false
+    ));
+    assert!(!lighting_output::chain_should_power(
+        true, true, false, false, false
+    ));
 }
 
 #[test]

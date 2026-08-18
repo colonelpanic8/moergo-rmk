@@ -258,7 +258,8 @@ pub fn init<'keymap, 'data>(
         &crate::LIGHTING_TOPOLOGY,
         persisted_runtime_conditional_scenes,
     );
-    let service = LightingService::new(provider, engine, LogicalFrame::new(Rgb8::BLACK));
+    let service = LightingService::new(provider, engine, LogicalFrame::new(Rgb8::BLACK))
+        .with_present_interval(crate::lighting::PRESENT_REFRESH_INTERVAL);
     let output = HalfOutput::left(LightingHardware::new(spi, data_pin, chain_power_pin));
     LightingProcessor::new(service, output, &CORE_MAILBOX)
 }
