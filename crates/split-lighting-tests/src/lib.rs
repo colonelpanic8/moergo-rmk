@@ -155,6 +155,14 @@ fn existing_split_messages_round_trip() {
             request_id: 10,
             offset: 24,
         },
+        Message::TransportStatus {
+            auto: true,
+            wired: false,
+        },
+        Message::TransportStatus {
+            auto: false,
+            wired: true,
+        },
         Message::FrameChunk {
             request_id: 10,
             revision: Some(0x1234_5678),
