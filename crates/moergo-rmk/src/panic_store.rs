@@ -198,11 +198,13 @@ pub fn boot_trace() -> heapless::String<REPORT_CAP> {
         if core::ptr::read_volatile(core::ptr::addr_of!((*p).magic)) == STAMP_MAGIC {
             let _ = write!(
                 out,
-                "stage={} boots={} rr={:#x},{:#x}",
+                "stage={} boots={} rr={:#x},{:#x} cause={},{}",
                 core::ptr::read_volatile(core::ptr::addr_of!((*p).stage)),
                 core::ptr::read_volatile(core::ptr::addr_of!((*p).boots)),
                 core::ptr::read_volatile(core::ptr::addr_of!((*p).resetreas[0])),
                 core::ptr::read_volatile(core::ptr::addr_of!((*p).resetreas[1])),
+                core::ptr::read_volatile(0x2003_FBB0usize as *const u32),
+                core::ptr::read_volatile(0x2003_FBB4usize as *const u32),
             );
         } else {
             let _ = out.push_str("no trace");
