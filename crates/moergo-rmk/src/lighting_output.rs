@@ -17,6 +17,11 @@ pub const fn chain_should_power(
     sleeping: bool,
     frame_visible: bool,
     keep_power_while_awake: bool,
+    keep_power_while_suspended: bool,
 ) -> bool {
-    !sleeping && (keep_power_while_awake || usb_powered || frame_visible)
+    if sleeping {
+        keep_power_while_suspended
+    } else {
+        keep_power_while_awake || usb_powered || frame_visible
+    }
 }

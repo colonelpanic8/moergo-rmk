@@ -331,6 +331,7 @@ fn update_chain_power(usb_powered: bool, sleeping: bool) -> Option<Instant> {
             sleeping,
             state.frame_visible,
             crate::BOARD_KEEP_LED_POWER_WHILE_AWAKE,
+            crate::BOARD_KEEP_LED_POWER_WHILE_SUSPENDED,
         );
         match (state.powered_at, should_power) {
             (None, true) => {
@@ -482,6 +483,15 @@ impl LightingOutput<LogicalFrame<Rgb8, TOTAL_LEDS>> for HalfOutput {
     }
 
     async fn suspend(&mut self) -> Result<(), Self::Error> {
+        if crate::BOARD_KEEP_LED_POWER_WHILE_SUSPENDED {
+            // The rail stays asserted through suspend, so the chain must be
+            // latched dark explicitly before rendering stops.
+            return self
+                .hardware
+                .write(&[Rgb8::BLACK; LEDS_PER_HALF])
+                .await
+                .map_err(|_| OutputError::Spi);
+        }
         set_chain_frame_visible(false);
         power_down_chain();
         Ok(())

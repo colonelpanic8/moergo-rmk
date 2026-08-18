@@ -28,6 +28,15 @@ pub const BOARD_KEEP_LED_POWER_WHILE_AWAKE: bool = false;
 pub const BOARD_KEEP_LED_POWER_WHILE_AWAKE: bool = true;
 
 #[cfg(feature = "glove80")]
+pub const BOARD_KEEP_LED_POWER_WHILE_SUSPENDED: bool = false;
+// Canonical GO60 ZMK compiles without RGB_UNDERGLOW_AUTO_OFF_IDLE, so
+// WS2812_CE stays asserted through idle/sleep. A dropped rail leaves this
+// chain at sub-threshold voltage and randomly lit, so suspend latches a dark
+// frame instead of cutting power.
+#[cfg(feature = "go60")]
+pub const BOARD_KEEP_LED_POWER_WHILE_SUSPENDED: bool = true;
+
+#[cfg(feature = "glove80")]
 pub const BOARD_MAINTENANCE_LED: u16 = 12;
 #[cfg(feature = "go60")]
 pub const BOARD_MAINTENANCE_LED: u16 = 8;
