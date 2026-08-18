@@ -982,6 +982,39 @@ fn try_send_diagnostic(message: crate::split_lighting::Message) -> bool {
 /// these giant joined futures have miscompiled into mid-instruction jumps
 /// on thumbv7em (see the split-transport qualification notes), so arm
 /// bodies stay in named functions. Returns whether a send is still owed.
+/// Relay the persisted boot trace (and panic location, if any) once per
+/// link-up. Out-of-line for the same reason as every other arm body here.
+#[inline(never)]
+fn relay_debug_now(step: u8) -> bool {
+    if rmk::split_app::SPLIT_APP_LINK.try_get() != Some(true) {
+        return false;
+    }
+    let sent = match step {
+        0 => {
+            let (stage, boots, rr, cause) = crate::debug_trace_parts();
+            try_send_diagnostic(crate::split_lighting::Message::DebugTrace {
+                stage,
+                boots,
+                rr,
+                cause,
+            })
+        }
+        _ => match crate::debug_panic_loc() {
+            None => true,
+            Some(loc) => {
+                let mut text = [0u8; 23];
+                let take = loc.len().min(23);
+                text[..take].copy_from_slice(&loc.as_bytes()[..take]);
+                try_send_diagnostic(crate::split_lighting::Message::DebugPanicLoc {
+                    len: take as u8,
+                    text,
+                })
+            }
+        },
+    };
+    sent
+}
+
 #[inline(never)]
 fn announce_transport_now() -> bool {
     let wired = rmk::split::selector::wired_selected();
@@ -1223,13 +1256,16 @@ impl Runnable for PeripheralReplication {
             .expect("lighting replication owns one split-link receiver");
         let mut heartbeat_at = embassy_time::Instant::now() + ATTESTATION_INTERVAL;
         let mut announce_transport = auto_split_enabled();
+        // Debug relay: 2 = trace owed, 1 = panic-loc owed, 0 = done for this
+        // link session. Runs after the transport announcement drains.
+        let mut relay_debug: u8 = 2;
         loop {
             let wired = rmk::split::selector::wired_selected();
             match embassy_futures::select::select4(
                 link.changed(),
                 rmk::split_app::SPLIT_APP_RX.receive(),
                 Timer::at(heartbeat_at),
-                transport_announce_due(announce_transport, wired),
+                transport_announce_due(announce_transport || relay_debug > 0, wired),
             )
             .await
             {
@@ -1237,6 +1273,7 @@ impl Runnable for PeripheralReplication {
                     self.stage.reset();
                     if up {
                         announce_transport = auto_split_enabled();
+                        relay_debug = 2;
                     }
                     // Drain the inbox only when the link went down. This half
                     // marks the link up on the first *inbound* message, so on
@@ -1262,7 +1299,15 @@ impl Runnable for PeripheralReplication {
                     }
                 }
                 embassy_futures::select::Either4::Fourth(()) => {
-                    announce_transport = announce_transport_now();
+                    // One owed packet per firing: the diagnostic queue only
+                    // admits into an empty queue, so sending two here would
+                    // starve whichever went second.
+                    let edge = rmk::split::selector::wired_selected() != wired;
+                    if edge || announce_transport {
+                        announce_transport = announce_transport_now();
+                    } else if relay_debug > 0 && relay_debug_now(2 - relay_debug) {
+                        relay_debug -= 1;
+                    }
                 }
             }
         }

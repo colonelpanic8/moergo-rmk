@@ -155,3 +155,11 @@ mod keyboard_central {
 pub fn debug_stamp(stage: u32) {
     let _ = stage;
 }
+
+pub fn debug_trace_parts() -> (u32, u32, [u32; 2], [u32; 2]) {
+    (0, 0, [0; 2], [0; 2])
+}
+
+pub fn debug_panic_loc() -> Option<heapless::String<64>> {
+    None
+}

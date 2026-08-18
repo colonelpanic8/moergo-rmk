@@ -71,6 +71,11 @@ const TAG_WAKE_LAYERS: u8 = 20;
 /// Peripheral-to-central transport announcement. Additive like effect hits:
 /// an older central ignores the unknown tag.
 const TAG_TRANSPORT_STATUS: u8 = 21;
+/// Peripheral-to-central relay of the peripheral's persisted boot trace and
+/// crash report — the only readout path, since peripherals expose no USB in
+/// app mode. Additive like the other side-band tags.
+const TAG_DEBUG_TRACE: u8 = 22;
+const TAG_DEBUG_PANIC_LOC: u8 = 23;
 
 const BEGIN_LEN: usize = 26;
 const WAKE_LAYERS_LEN: usize = 15;
@@ -94,6 +99,8 @@ const STATUS_REQUEST_LEN: usize = 3;
 const STATUS_REPORT_LEN: usize = 23;
 const FRAME_CHUNK_REQUEST_LEN: usize = 5;
 const TRANSPORT_STATUS_LEN: usize = 4;
+const DEBUG_TRACE_LEN: usize = 26;
+const DEBUG_PANIC_LOC_LEN: usize = 26;
 const FRAME_CHUNK_CELLS: usize = 4;
 const FRAME_CHUNK_LEN: usize = 25;
 const _: () = assert!(CELL_LEN <= SPLIT_APP_MSG_MAX);
@@ -266,6 +273,19 @@ pub enum Message {
     TransportStatus {
         auto: bool,
         wired: bool,
+    },
+    /// The peripheral's persisted numeric boot trace, sent once per link-up.
+    DebugTrace {
+        stage: u32,
+        boots: u32,
+        rr: [u32; 2],
+        cause: [u32; 2],
+    },
+    /// First 23 bytes of the peripheral's persisted panic location, sent
+    /// once per link-up when a report exists.
+    DebugPanicLoc {
+        len: u8,
+        text: [u8; 23],
     },
 }
 
@@ -864,6 +884,27 @@ impl Message {
                 out[3] = wired as u8;
                 TRANSPORT_STATUS_LEN
             }
+            Message::DebugTrace {
+                stage,
+                boots,
+                rr,
+                cause,
+            } => {
+                out[1] = TAG_DEBUG_TRACE;
+                put_u32(&mut out, 2, stage);
+                put_u32(&mut out, 6, boots);
+                put_u32(&mut out, 10, rr[0]);
+                put_u32(&mut out, 14, rr[1]);
+                put_u32(&mut out, 18, cause[0]);
+                put_u32(&mut out, 22, cause[1]);
+                DEBUG_TRACE_LEN
+            }
+            Message::DebugPanicLoc { len, text } => {
+                out[1] = TAG_DEBUG_PANIC_LOC;
+                out[2] = len.min(23);
+                out[3..26].copy_from_slice(&text);
+                DEBUG_PANIC_LOC_LEN
+            }
         };
         SplitAppData::new(&out[..len]).expect("semantic lighting packet is bounded")
     }
@@ -1281,6 +1322,20 @@ impl Message {
                     wired: flag(bytes[3])?,
                 })
             }
+            TAG_DEBUG_TRACE if bytes.len() == DEBUG_TRACE_LEN => Ok(Message::DebugTrace {
+                stage: get_u32(bytes, 2),
+                boots: get_u32(bytes, 6),
+                rr: [get_u32(bytes, 10), get_u32(bytes, 14)],
+                cause: [get_u32(bytes, 18), get_u32(bytes, 22)],
+            }),
+            TAG_DEBUG_PANIC_LOC if bytes.len() == DEBUG_PANIC_LOC_LEN => {
+                let mut text = [0u8; 23];
+                text.copy_from_slice(&bytes[3..26]);
+                Ok(Message::DebugPanicLoc {
+                    len: bytes[2].min(23),
+                    text,
+                })
+            }
             TAG_BEGIN
             | TAG_CONTEXT
             | TAG_CELL
@@ -1300,7 +1355,9 @@ impl Message {
             | TAG_STATUS_REPORT
             | TAG_FRAME_CHUNK_REQUEST
             | TAG_FRAME_CHUNK
-            | TAG_TRANSPORT_STATUS => Err(DecodeError::Length),
+            | TAG_TRANSPORT_STATUS
+            | TAG_DEBUG_TRACE
+            | TAG_DEBUG_PANIC_LOC => Err(DecodeError::Length),
             _ => Err(DecodeError::Tag),
         }
     }
@@ -2026,6 +2083,10 @@ impl SnapshotStage {
             | Message::FrameChunkRequest { .. }
             | Message::FrameChunk { .. }
             | Message::TransportStatus { .. }
+            | Message::DebugTrace { .. }
+            | Message::DebugPanicLoc { .. }
+            | Message::DebugTrace { .. }
+            | Message::DebugPanicLoc { .. }
             | Message::ContextUpdate { .. }
             | Message::Begin { .. } => None,
         }

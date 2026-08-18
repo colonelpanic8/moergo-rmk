@@ -2,7 +2,7 @@ use rmk::types::protocol::rynk::{
     DeviceDataDescriptor, DeviceDataRecord, DeviceDataValue, DeviceDataVolatility,
 };
 
-const RECORD_COUNT: u8 = 9;
+const RECORD_COUNT: u8 = 11;
 
 pub fn descriptor() -> DeviceDataDescriptor {
     DeviceDataDescriptor {
@@ -22,6 +22,24 @@ fn record(key: &str, volatility: DeviceDataVolatility, value: DeviceDataValue) -
         volatility,
         value,
     }
+}
+
+fn peripheral_trace_text() -> heapless::String<64> {
+    use core::fmt::Write as _;
+    let mut out = heapless::String::new();
+    match crate::central_lighting::peripheral_debug() {
+        None => {
+            let _ = out.push_str("none");
+        }
+        Some(d) => {
+            let _ = write!(
+                out,
+                "stage={} boots={} rr={:#x},{:#x} cause={},{}",
+                d.stage, d.boots, d.rr[0], d.rr[1], d.cause[0], d.cause[1]
+            );
+        }
+    }
+    out
 }
 
 pub fn record_at(index: u8) -> Option<DeviceDataRecord> {
@@ -88,6 +106,21 @@ pub fn record_at(index: u8) -> Option<DeviceDataRecord> {
             "debug.bootTrace",
             DeviceDataVolatility::Live,
             text(crate::panic_store::boot_trace().as_str()),
+        )),
+        9 => Some(record(
+            "debug.peripheral.trace",
+            DeviceDataVolatility::Live,
+            text(peripheral_trace_text().as_str()),
+        )),
+        10 => Some(record(
+            "debug.peripheral.panicLoc",
+            DeviceDataVolatility::Live,
+            text(
+                crate::central_lighting::peripheral_debug()
+                    .and_then(|d| d.panic_loc)
+                    .as_deref()
+                    .unwrap_or("none"),
+            ),
         )),
         _ => None,
     }

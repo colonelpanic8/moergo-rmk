@@ -73,3 +73,11 @@ mod keyboard_peripheral {
 pub fn debug_stamp(stage: u32) {
     crate::panic_store::stamp(stage);
 }
+
+pub fn debug_trace_parts() -> (u32, u32, [u32; 2], [u32; 2]) {
+    crate::panic_store::trace_parts()
+}
+
+pub fn debug_panic_loc() -> Option<heapless::String<{ crate::panic_store::REPORT_CAP }>> {
+    crate::panic_store::raw_report_loc()
+}

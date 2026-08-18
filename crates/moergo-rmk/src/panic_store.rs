@@ -190,6 +190,40 @@ pub fn boot_mark() {
     }
 }
 
+/// The numeric trace fields, for the split-link debug relay.
+pub fn trace_parts() -> (u32, u32, [u32; 2], [u32; 2]) {
+    unsafe {
+        let p = stamps_ptr();
+        if core::ptr::read_volatile(core::ptr::addr_of!((*p).magic)) != STAMP_MAGIC {
+            return (0, 0, [0; 2], [0; 2]);
+        }
+        (
+            core::ptr::read_volatile(core::ptr::addr_of!((*p).stage)),
+            core::ptr::read_volatile(core::ptr::addr_of!((*p).boots)),
+            [
+                core::ptr::read_volatile(core::ptr::addr_of!((*p).resetreas[0])),
+                core::ptr::read_volatile(core::ptr::addr_of!((*p).resetreas[1])),
+            ],
+            [
+                core::ptr::read_volatile(0x2003_FBB0usize as *const u32),
+                core::ptr::read_volatile(0x2003_FBB4usize as *const u32),
+            ],
+        )
+    }
+}
+
+/// The persisted report's location line, read straight from the store (the
+/// peripheral never calls [`capture_boot`], so the store is the source).
+pub fn raw_report_loc() -> Option<heapless::String<REPORT_CAP>> {
+    let p = store_ptr();
+    unsafe {
+        if core::ptr::read_volatile(core::ptr::addr_of!((*p).magic)) != MAGIC {
+            return None;
+        }
+        Some(read_slice(&(*p).loc, (*p).loc_len))
+    }
+}
+
 /// Render the persisted trace: `stage=N boots=N rr=this,prev`.
 pub fn boot_trace() -> heapless::String<REPORT_CAP> {
     let mut out = heapless::String::new();

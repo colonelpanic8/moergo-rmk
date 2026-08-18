@@ -5,6 +5,7 @@
 //! snapshots rather than streaming sampled right-half RGB frames.
 
 use core::cell::Cell;
+use core::cell::RefCell;
 
 use embassy_futures::select::{Either, Either4, select, select4};
 use embassy_nrf::Peri;
@@ -109,12 +110,57 @@ pub fn peripheral_transport() -> Option<PeripheralTransport> {
     PERIPHERAL_TRANSPORT.lock(Cell::get)
 }
 
+/// The peripheral's relayed boot trace and panic location, refreshed once
+/// per split session. Read by the Go60's debug device-data records.
+static PERIPHERAL_DEBUG: BlockingMutex<rmk::RawMutex, RefCell<Option<PeripheralDebug>>> =
+    BlockingMutex::new(RefCell::new(None));
+
+#[derive(Clone)]
+pub struct PeripheralDebug {
+    pub stage: u32,
+    pub boots: u32,
+    pub rr: [u32; 2],
+    pub cause: [u32; 2],
+    pub panic_loc: Option<heapless::String<23>>,
+}
+
+pub fn peripheral_debug() -> Option<PeripheralDebug> {
+    PERIPHERAL_DEBUG.lock(|slot| slot.borrow().clone())
+}
+
+#[inline(never)]
+fn record_peripheral_trace(stage: u32, boots: u32, rr: [u32; 2], cause: [u32; 2]) {
+    PERIPHERAL_DEBUG.lock(|slot| {
+        let mut slot = slot.borrow_mut();
+        let panic_loc = slot.take().and_then(|d| d.panic_loc);
+        *slot = Some(PeripheralDebug {
+            stage,
+            boots,
+            rr,
+            cause,
+            panic_loc,
+        });
+    });
+}
+
+#[inline(never)]
+fn record_peripheral_panic_loc(len: u8, text: [u8; 23]) {
+    PERIPHERAL_DEBUG.lock(|slot| {
+        let mut slot = slot.borrow_mut();
+        if let Some(d) = slot.as_mut() {
+            let mut loc = heapless::String::new();
+            if let Ok(t) = core::str::from_utf8(&text[..(len as usize).min(23)]) {
+                let _ = loc.push_str(t);
+            }
+            d.panic_loc = Some(loc);
+        }
+    });
+}
+
 #[inline(never)]
 fn record_peripheral_transport(auto: bool, wired: bool) {
     PERIPHERAL_TRANSPORT.lock(|slot| slot.set(Some(PeripheralTransport { auto, wired })));
 }
-
-
 
 pub struct BoardReplicationStatus;
 
@@ -748,6 +794,15 @@ impl Runnable for CentralReplication {
                         }
                         Ok(crate::split_lighting::Message::TransportStatus { auto, wired }) => {
                             record_peripheral_transport(auto, wired)
+                        }
+                        Ok(crate::split_lighting::Message::DebugTrace {
+                            stage,
+                            boots,
+                            rr,
+                            cause,
+                        }) => record_peripheral_trace(stage, boots, rr, cause),
+                        Ok(crate::split_lighting::Message::DebugPanicLoc { len, text }) => {
+                            record_peripheral_panic_loc(len, text)
                         }
                         _ => {}
                     }
