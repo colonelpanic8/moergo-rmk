@@ -300,6 +300,25 @@ const ZERO_FRAME: u8 = 0x40;
 const RESET_BYTES: usize = 48;
 const ENCODED_LEN: usize = LEDS_PER_HALF * 24 + RESET_BYTES;
 const CHAIN_POWER_SETTLE: Duration = Duration::from_millis(120);
+/// Rewrite the latched frame once a second even when it has not changed.
+///
+/// These WS2812 chains are write-only: each pixel holds its colour in a
+/// volatile register until the next frame arrives, and nothing reads back.
+/// Presentation is otherwise driven by changed-detection, so a frame that
+/// stops changing is written once and then never refreshed -- on the Go60
+/// right half that left the chain latching noise into visible colour and
+/// holding it, since no further write was ever due.
+///
+/// Only an effect at rest reaches that state. Key-reactive effects
+/// (Reactive, Crosshair, and their family) render exact black once every hit
+/// has expired, and that constant frame suppresses further presentation
+/// indefinitely. Continuously animated effects such as Flow or Rain change
+/// every 40 ms tick, so they rewrite the chain constantly and overwrite any
+/// corruption before it can be seen: they mask this fault rather than avoid
+/// it. One second is well under human patience for a stray pixel while
+/// costing one 30-pixel SPI transaction, about 1.6 ms of bus time, per
+/// second.
+pub(crate) const PRESENT_REFRESH_INTERVAL: NonZeroU32 = NonZeroU32::new(1000).unwrap();
 const STATUS_PWM_TOP: u16 = 320;
 const STATUS_PWM_DUTY: u16 = 16;
 const POWER_POLL_INTERVAL: Duration = Duration::from_secs(1);
@@ -941,7 +960,8 @@ pub fn init_peripheral(
         PeripheralState,
         engine(None, None, None),
         LogicalFrame::new(Rgb8::BLACK),
-    );
+    )
+    .with_present_interval(PRESENT_REFRESH_INTERVAL);
     let output = HalfOutput::right(LightingHardware::new(spi, data_pin, chain_power_pin));
     LightingProcessor::new(service, output, &CORE_MAILBOX)
 }

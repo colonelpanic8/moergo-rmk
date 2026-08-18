@@ -5,7 +5,7 @@
 //! (SCK P0.19 / MISO P0.21 / MOSI P0.22 at 1 MHz) with chip select on
 //! P0.25 and the data-ready line on P0.23 (active high, pull-down), and
 //! runs with 1x sensitivity, hardware 90° rotation, Y inversion, and the
-//! secondary tap disabled. Both halves are wired identically; the
+//! secondary tap enabled. Both halves are wired identically; the
 //! peripheral's events reach the central over the split link.
 //!
 //! The two pads are told apart by their RMK pointing-device id, and each
@@ -67,7 +67,7 @@ pub fn init(
             sensitivity: PinnacleSensitivity::X1,
             rotate_90: true,
             y_invert: true,
-            no_secondary_tap: true,
+            no_secondary_tap: false,
             ..Default::default()
         },
     )
