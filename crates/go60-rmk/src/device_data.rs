@@ -36,7 +36,7 @@ fn peripheral_trace_text() -> heapless::String<96> {
             // and completed TX counts; cause carries RX bytes and good frames.
             let _ = write!(
                 out,
-                "boots={} wired={} rx={} ok={} bad={} err={} tx={}/{}",
+                "boots={} wired={} rx={} ok={} bad={} err/cancel={:#x} tx={}/{}",
                 d.boots,
                 d.rr[0] >> 16,
                 d.cause[0],
@@ -144,16 +144,17 @@ pub fn record_at(index: u8) -> Option<DeviceDataRecord> {
 /// off the central over USB while the split link itself is down.
 fn wired_counter_text() -> heapless::String<64> {
     use core::fmt::Write as _;
-    let (rx, ok, bad, tx, tx_done, rx_err) = rmk::split::serial::counters::snapshot();
+    let (rx, ok, bad, tx, tx_done, err_and_cancel) = rmk::split::serial::counters::snapshot();
     let mut out = heapless::String::new();
     let _ = write!(
         out,
-        "wired={} rx={} ok={} bad={} err={} tx={}/{}",
+        "wired={} rx={} ok={} bad={} err={} cancel={} tx={}/{}",
         rmk::split::selector::wired_entries(),
         rx,
         ok,
         bad,
-        rx_err,
+        err_and_cancel >> 16,
+        err_and_cancel & 0xffff,
         tx,
         tx_done
     );

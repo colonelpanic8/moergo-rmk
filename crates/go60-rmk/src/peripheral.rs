@@ -81,11 +81,11 @@ pub fn debug_trace_parts() -> (u32, u32, [u32; 2], [u32; 2]) {
     // is actually being used to diagnose. Counts that can run into the
     // thousands get a full word; the rest share one, 16 bits each.
     let (stage, boots, _rr, _cause) = crate::panic_store::trace_parts();
-    let (rx_bytes, frames_ok, frames_bad, tx_frames, tx_done, rx_errors) = ::rmk::split::serial::counters::snapshot();
+    let (rx_bytes, frames_ok, frames_bad, tx_frames, tx_done, err_and_cancel) = ::rmk::split::serial::counters::snapshot();
     let half = |v: u32| v.min(0xffff);
     let selects_and_bad = (half(::rmk::split::selector::wired_entries()) << 16) | half(frames_bad);
     let tx = (half(tx_frames) << 16) | half(tx_done);
-    let ok_and_errors = (half(frames_ok) << 16) | half(rx_errors);
+    let ok_and_errors = (half(frames_ok) << 16) | half(err_and_cancel & 0xffff);
     (stage, boots, [selects_and_bad, tx], [rx_bytes, ok_and_errors])
 }
 
