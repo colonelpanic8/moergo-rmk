@@ -653,6 +653,17 @@ fn pointing_uses_keypad(config: &WirePointingConfig) -> bool {
             .any(|entry| matches!(entry.mode, PointingMode::Keypad(_)))
 }
 
+fn pointing_uses_cursor_remap(config: &WirePointingConfig) -> bool {
+    config
+        .devices()
+        .iter()
+        .any(|entry| matches!(entry.mode, PointingMode::CursorRemap(_)))
+        || config
+            .overrides()
+            .iter()
+            .any(|entry| matches!(entry.mode, PointingMode::CursorRemap(_)))
+}
+
 fn require_keypad_capability(
     result: std::result::Result<PointingCapabilities, RynkHostError>,
 ) -> Result<()> {
@@ -663,6 +674,21 @@ fn require_keypad_capability(
         ),
         Err(error) if endpoint_unsupported(&error) => bail!(
             "connected firmware does not advertise keypad pointing support; flash updated firmware first"
+        ),
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn require_cursor_remap_capability(
+    result: std::result::Result<PointingCapabilities, RynkHostError>,
+) -> Result<()> {
+    match result {
+        Ok(capabilities) if capabilities.supports_cursor_remap() => Ok(()),
+        Ok(_) => bail!(
+            "connected firmware does not support cursor button remapping; flash updated firmware first"
+        ),
+        Err(error) if endpoint_unsupported(&error) => bail!(
+            "connected firmware does not advertise cursor button remapping; flash updated firmware first"
         ),
         Err(error) => Err(error.into()),
     }
@@ -1090,6 +1116,9 @@ async fn apply_snapshot(client: &Client, desired: &Snapshot, before: &Snapshot) 
             if pointing_uses_keypad(&wanted) {
                 require_keypad_capability(client.get_pointing_capabilities().await)?;
             }
+            if pointing_uses_cursor_remap(&wanted) {
+                require_cursor_remap_capability(client.get_pointing_capabilities().await)?;
+            }
             let mut next = wanted;
             next.revision = before.pointing.map_or(0, |present| present.revision);
             client
@@ -1289,8 +1318,10 @@ fn print_diff(desired: &Snapshot, live: &Snapshot) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rynk::rmk_types::pointing::KeypadConfig;
-    use rynk::rmk_types::protocol::rynk::{PointingDeviceConfig, POINTING_MODE_KEYPAD};
+    use rynk::rmk_types::pointing::{CursorRemapConfig, KeypadConfig};
+    use rynk::rmk_types::protocol::rynk::{
+        PointingDeviceConfig, POINTING_MODE_CURSOR_REMAP, POINTING_MODE_KEYPAD,
+    };
 
     #[test]
     fn keypad_capability_probe_handles_new_and_old_firmware() {
@@ -1310,6 +1341,31 @@ mod tests {
 
         let error = require_keypad_capability(Err(RynkHostError::Rejected(RynkError::UnknownCmd)))
             .unwrap_err();
+        assert!(error.to_string().contains("flash updated firmware first"));
+    }
+
+    #[test]
+    fn cursor_remap_capability_probe_handles_new_and_old_firmware() {
+        let mut pointing = WirePointingConfig {
+            device_count: 1,
+            ..Default::default()
+        };
+        pointing.devices[0] = PointingDeviceConfig {
+            device_id: 0,
+            mode: PointingMode::CursorRemap(CursorRemapConfig {
+                primary_button: 2,
+                ..Default::default()
+            }),
+        };
+        assert!(pointing_uses_cursor_remap(&pointing));
+        assert!(require_cursor_remap_capability(Ok(PointingCapabilities {
+            mode_flags: POINTING_MODE_CURSOR_REMAP,
+        }))
+        .is_ok());
+
+        let error =
+            require_cursor_remap_capability(Err(RynkHostError::Rejected(RynkError::UnknownCmd)))
+                .unwrap_err();
         assert!(error.to_string().contains("flash updated firmware first"));
     }
 }
