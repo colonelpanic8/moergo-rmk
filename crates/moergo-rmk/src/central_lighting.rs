@@ -534,6 +534,13 @@ struct PendingAck {
 
 /// How long a transfer waits for the peripheral's acknowledgement.
 const ACK_TIMEOUT: Duration = Duration::from_millis(500);
+/// Consecutive unacked snapshots before retries slow to the idle cadence. A
+/// transport that cannot deliver the snapshot must not be allowed to spend
+/// the whole link retrying: the retry traffic starves control messages and
+/// the peripheral's own replies.
+const RESYNC_FAST_ATTEMPTS: u32 = 5;
+/// Retry cadence once the fast attempts are spent.
+const RESYNC_IDLE_BACKOFF: Duration = Duration::from_secs(20);
 /// How long the central waits before re-offering a transfer the split queue
 /// had no room for.
 const SEND_BACKOFF: Duration = Duration::from_millis(50);
@@ -634,6 +641,7 @@ impl Runnable for CentralReplication {
         let mut last_acked_revision = None;
         let mut expected_digests = None;
         let mut health = ReplicationHealth::Resynchronizing;
+        let mut failed_attempts: u32 = 0;
         let mut last_attested_at = None;
         let mut recovery = crate::split_lighting::AttestationRecovery::new();
         let mut status_request_id = 0u8;
@@ -725,6 +733,7 @@ impl Runnable for CentralReplication {
             {
                 Either4::First(up) => {
                     link_up = up;
+                    failed_attempts = 0;
                     awaiting_ack = None;
                     // Replicate directly on reconnect. Probing first observes the
                     // peripheral's necessarily stale pre-sync digest and feeds a
@@ -773,6 +782,7 @@ impl Runnable for CentralReplication {
                                 last_acked_revision = Some(revision);
                                 recovery.snapshot_acked(revision);
                             }
+                            failed_attempts = 0;
                             health = ReplicationHealth::Healthy;
                         }
                         Ok(crate::split_lighting::Message::Attestation { digests, .. }) => {
@@ -840,7 +850,13 @@ impl Runnable for CentralReplication {
                     {
                         awaiting_ack = None;
                         full_dirty = link_up;
-                        health = ReplicationHealth::Resynchronizing;
+                        failed_attempts = failed_attempts.saturating_add(1);
+                        if failed_attempts >= RESYNC_FAST_ATTEMPTS {
+                            retry_at = Some(Instant::now() + RESYNC_IDLE_BACKOFF);
+                            health = ReplicationHealth::Stale;
+                        } else {
+                            health = ReplicationHealth::Resynchronizing;
+                        }
                     }
                 }
             }
