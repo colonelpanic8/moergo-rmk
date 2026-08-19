@@ -487,8 +487,13 @@ fn frame_page_assembly_accepts_only_contiguous_consistent_chunks() {
 }
 
 #[test]
-fn diagnostics_only_enter_an_empty_depth_two_response_queue() {
-    assert!(split_lighting::diagnostic_may_enqueue(2));
-    assert!(!split_lighting::diagnostic_may_enqueue(1));
-    assert!(!split_lighting::diagnostic_may_enqueue(0));
+fn diagnostics_only_enter_an_empty_response_queue() {
+    assert!(split_lighting::diagnostic_may_enqueue(2, 2));
+    assert!(!split_lighting::diagnostic_may_enqueue(1, 2));
+    assert!(!split_lighting::diagnostic_may_enqueue(0, 2));
+    // The regression that muted every peripheral diagnostic: the queue grew
+    // to sixteen slots while the gate still demanded exactly two free.
+    assert!(split_lighting::diagnostic_may_enqueue(16, 16));
+    assert!(!split_lighting::diagnostic_may_enqueue(2, 16));
+    assert!(!split_lighting::diagnostic_may_enqueue(15, 16));
 }

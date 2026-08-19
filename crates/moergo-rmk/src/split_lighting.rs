@@ -141,8 +141,14 @@ impl ReplicatedContext {
     }
 }
 
-pub const fn diagnostic_may_enqueue(free_capacity: usize) -> bool {
-    free_capacity == 2
+/// Diagnostics and heartbeats only enter an empty peripheral queue, so a
+/// replication Ack always finds room behind them. Emptiness is judged
+/// against the queue's actual capacity: this predicate used to hard-code
+/// the old two-slot capacity, and when the queue grew to sixteen the test
+/// could never hold again — every transport announcement, debug relay,
+/// status report, and heartbeat attestation was silently refused.
+pub const fn diagnostic_may_enqueue(free_capacity: usize, capacity: usize) -> bool {
+    free_capacity == capacity
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

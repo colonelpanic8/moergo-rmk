@@ -968,11 +968,12 @@ pub fn init_peripheral(
 }
 
 fn try_send_diagnostic(message: crate::split_lighting::Message) -> bool {
-    // RMK's peripheral application queue has two slots. Diagnostics and
-    // heartbeats only enter an empty queue, preserving the second slot for a
-    // replication Ack that can arrive while the first packet is pending.
+    // Diagnostics and heartbeats only enter an empty queue, preserving the
+    // remaining slots for replication Acks that can arrive while a packet
+    // is pending.
     crate::split_lighting::diagnostic_may_enqueue(
         rmk::split_app::SPLIT_APP_PERIPH_TX.free_capacity(),
+        rmk::split_app::SPLIT_APP_PERIPH_TX.capacity(),
     ) && rmk::split_app::SPLIT_APP_PERIPH_TX
         .try_send(message.encode())
         .is_ok()
