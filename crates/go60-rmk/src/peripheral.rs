@@ -85,8 +85,9 @@ pub fn debug_trace_parts() -> (u32, u32, [u32; 2], [u32; 2]) {
     let half = |v: u32| v.min(0xffff);
     let selects_and_bad = (half(::rmk::split::selector::wired_entries()) << 16) | half(frames_bad);
     let tx = (half(tx_frames) << 16) | half(tx_done);
-    let ok_and_errors = (half(frames_ok) << 16) | half(err_and_cancel & 0xffff);
-    (stage, boots, [selects_and_bad, tx], [rx_bytes, ok_and_errors])
+    let _ = (frames_ok, err_and_cancel);
+    let stage_debug = crate::split_lighting::STAGE_DEBUG.load(core::sync::atomic::Ordering::Relaxed);
+    (stage, boots, [selects_and_bad, tx], [rx_bytes, stage_debug])
 }
 
 

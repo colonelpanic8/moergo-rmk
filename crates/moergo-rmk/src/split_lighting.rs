@@ -1823,6 +1823,25 @@ struct Stage {
     batteries: BatteryPair,
 }
 
+/// Why the last staged snapshot died, for the debug relay: site of the
+/// abort in the high byte, then abort/complete/begin counts. Assembly loss
+/// on the wire and a decode/ordering defect look identical without it.
+pub static STAGE_DEBUG: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+
+fn stage_note(shift: u32) {
+    use core::sync::atomic::Ordering;
+    let v = STAGE_DEBUG.load(Ordering::Relaxed);
+    let field = ((v >> shift) & 0xff).wrapping_add(1) & 0xff;
+    STAGE_DEBUG.store((v & !(0xff << shift)) | (field << shift), Ordering::Relaxed);
+}
+
+fn stage_abort(site: u32) {
+    use core::sync::atomic::Ordering;
+    let v = STAGE_DEBUG.load(Ordering::Relaxed);
+    let aborts = ((v >> 16) & 0xff).wrapping_add(1) & 0xff;
+    STAGE_DEBUG.store((v & 0x0000_ffff) | (site << 24) | (aborts << 16), Ordering::Relaxed);
+}
+
 pub struct SnapshotStage {
     stage: Option<Stage>,
 }
@@ -1879,6 +1898,7 @@ impl SnapshotStage {
                     extension_overlay_received: false,
                     batteries: BatteryPair::UNAVAILABLE,
                 });
+                stage_note(0);
                 None
             }
             Message::WakeLayers {
@@ -1888,6 +1908,7 @@ impl SnapshotStage {
             } => {
                 let stage = self.stage.as_mut()?;
                 if stage.generation != generation || stage.snapshot.revision != revision {
+stage_abort(1);
                     self.stage = None;
                 } else {
                     stage.snapshot.wake_layers = wake_layers;
@@ -1903,6 +1924,7 @@ impl SnapshotStage {
             } => {
                 let stage = self.stage.as_mut()?;
                 if stage.generation != generation || stage.snapshot.revision != revision {
+stage_abort(2);
                     self.stage = None;
                     return None;
                 }
@@ -1919,6 +1941,7 @@ impl SnapshotStage {
             } => {
                 let stage = self.stage.as_mut()?;
                 if stage.generation != generation || stage.snapshot.revision != revision {
+stage_abort(3);
                     self.stage = None;
                     return None;
                 }
@@ -1935,6 +1958,7 @@ impl SnapshotStage {
             } => {
                 let stage = self.stage.as_mut()?;
                 if stage.generation != generation || stage.snapshot.revision != revision {
+stage_abort(4);
                     self.stage = None;
                     return None;
                 }
@@ -1960,6 +1984,7 @@ impl SnapshotStage {
                         .any(|existing| existing.slot == cell.slot)
                     || stage.snapshot.overlay.push(cell).is_err()
                 {
+stage_abort(5);
                     self.stage = None;
                 }
                 None
@@ -1980,6 +2005,7 @@ impl SnapshotStage {
                         .any(|existing| existing.layer == cell.layer && existing.slot == cell.slot)
                     || stage.snapshot.scenes.set(cell).is_err()
                 {
+stage_abort(6);
                     self.stage = None;
                 }
                 None
@@ -1994,6 +2020,7 @@ impl SnapshotStage {
                     || stage.snapshot.revision != revision
                     || cell_count as usize > SCENE_CAPACITY
                 {
+stage_abort(7);
                     self.stage = None;
                 } else {
                     stage.expected_conditional_scene_cells = Some(cell_count as usize);
@@ -2020,6 +2047,7 @@ impl SnapshotStage {
                         .push(cell)
                         .is_err()
                 {
+stage_abort(8);
                     self.stage = None;
                 }
                 None
@@ -2043,6 +2071,7 @@ impl SnapshotStage {
                         })
                         .is_some();
                 if !amended {
+stage_abort(9);
                     self.stage = None;
                 }
                 None
@@ -2071,10 +2100,12 @@ impl SnapshotStage {
                             })
                 });
                 if valid {
+                    stage_note(8);
                     self.stage
                         .take()
                         .map(|stage| (stage.generation, stage.snapshot, stage.batteries))
                 } else {
+                    stage_abort(12);
                     self.stage = None;
                     None
                 }
