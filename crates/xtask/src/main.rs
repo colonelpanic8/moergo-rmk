@@ -264,11 +264,14 @@ fn dist(root: &Path) -> Result<()> {
     let config_digests = config_profile::digests(&config_path)?;
     let build_hash_seed = firmware_build_hash_seed(&source_commit, &rmk_commit, &config_digests);
     let rustflags = reproducible_rustflags(root, &config_path);
+    // `--locked` refuses a stale lockfile instead of silently rewriting it:
+    // that rewrite dirties the tree mid-run, and the next bundle then fails
+    // the clean-repository check with no hint of the real cause.
     for binary in ["glove80_lh", "glove80_rh"] {
         run_command(
             &firmware_dir,
             "cargo",
-            &["build", "--release", "--bin", binary],
+            &["build", "--locked", "--release", "--bin", binary],
             &[
                 ("MOERGO_RMK_GIT_VERSION", &rmk_version),
                 ("RMK_BUILD_HASH_SEED", &build_hash_seed),
@@ -345,11 +348,14 @@ fn dist_go60(root: &Path) -> Result<()> {
     let build = CanonicalGo60Build::prepare(root, &config_path)?;
     let build_firmware_dir = build.root.join("crates/go60-rmk");
     let rustflags = reproducible_rustflags(&build.root, &build.config_path);
+    // `--locked` refuses a stale lockfile instead of silently rewriting it:
+    // that rewrite dirties the tree mid-run, and the next bundle then fails
+    // the clean-repository check with no hint of the real cause.
     for binary in ["go60_lh", "go60_rh"] {
         run_command(
             &build_firmware_dir,
             "cargo",
-            &["build", "--release", "--bin", binary],
+            &["build", "--locked", "--release", "--bin", binary],
             &[
                 ("GO60_GIT_COMMIT", &source_commit),
                 ("GO60_GIT_DIRTY", source_dirty),
