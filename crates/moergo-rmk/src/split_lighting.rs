@@ -1835,6 +1835,11 @@ fn stage_note(shift: u32) {
     STAGE_DEBUG.store((v & !(0xff << shift)) | (field << shift), Ordering::Relaxed);
 }
 
+/// Debug-session probe: bump the byte at `shift` from outside this module.
+pub fn stage_note_pub(shift: u32) {
+    stage_note(shift);
+}
+
 fn stage_abort(site: u32) {
     use core::sync::atomic::Ordering;
     let v = STAGE_DEBUG.load(Ordering::Relaxed);
@@ -2100,7 +2105,6 @@ stage_abort(9);
                             })
                 });
                 if valid {
-                    stage_note(8);
                     self.stage
                         .take()
                         .map(|stage| (stage.generation, stage.snapshot, stage.batteries))
@@ -2123,8 +2127,11 @@ stage_abort(9);
             | Message::DebugPanicLoc { .. }
             | Message::DebugTrace { .. }
             | Message::DebugPanicLoc { .. }
-            | Message::ContextUpdate { .. }
-            | Message::Begin { .. } => None,
+            | Message::ContextUpdate { .. } => None,
+            Message::Begin { .. } => {
+                stage_note(8);
+                None
+            }
         }
     }
 

@@ -1157,11 +1157,13 @@ pub const fn peripheral_replication() -> PeripheralReplication {
 
 impl PeripheralReplication {
     async fn process(&mut self, data: rmk::split_app::SplitAppData) {
+        crate::split_lighting::stage_note_pub(24);
         if data.payload() == [BOOTLOADER_TAG] {
             rmk::boot::jump_to_bootloader();
             return;
         }
         let Ok(message) = crate::split_lighting::Message::decode(data) else {
+            crate::split_lighting::stage_note_pub(16);
             return;
         };
         if let crate::split_lighting::Message::EffectHit { slot } = message {
