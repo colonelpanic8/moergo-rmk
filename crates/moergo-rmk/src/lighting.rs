@@ -1087,11 +1087,7 @@ impl PeripheralLightingWorker {
                         Some(crate::split_lighting::Message::StatusReport {
                             request_id,
                             applied_revision: LAST_APPLIED_REVISION.lock(Cell::get),
-                            // Debug session: the stage abort site/counters ride
-                            // this otherwise-idle field over the reliable
-                            // status query. Restore `state.revision` after.
-                            engine_revision: crate::split_lighting::STAGE_DEBUG
-                                .load(core::sync::atomic::Ordering::Relaxed),
+                            engine_revision: state.revision,
                             layers,
                             powered: state.powered,
                             wake_active: state.wake_active,
