@@ -7,6 +7,7 @@ use clap::{Parser, Subcommand};
 // configuration model, so the CLI reaches them through their old module paths.
 use moergo_config::{keycodes, rynk_keycode};
 
+mod battery;
 mod config;
 mod connection;
 mod device_data;
@@ -38,6 +39,12 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Read each half's battery level from the standard BLE GATT services.
+    Battery {
+        /// Emit a machine-readable report.
+        #[arg(long)]
+        json: bool,
+    },
     /// Validate, compare, pull, or apply managed runtime configuration.
     Config {
         #[command(subcommand)]
@@ -90,6 +97,7 @@ fn selector(cli: &Cli) -> transport::Selector {
 
 fn run(cli: Cli) -> Result<()> {
     match &cli.command {
+        Command::Battery { json } => battery::run(&selector(&cli), *json),
         Command::Config { command } => config::run(&selector(&cli), command),
         Command::Connection { command } => connection::run(&selector(&cli), command),
         Command::DeviceData => device_data::run(&selector(&cli)),

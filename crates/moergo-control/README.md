@@ -13,6 +13,7 @@ cargo run -p moergo-control -- --usb version
 
 The top-level commands are:
 
+- `battery [--json]` (standard BLE GATT Battery Services for every half)
 - `config validate|diff|apply|pull|show`
 - `connection status|switch|clear|name`
 - `device-data` (namespaced static metadata and live state as JSON)
@@ -26,6 +27,12 @@ The top-level commands are:
 Device selection defaults to USB with BLE fallback. Use `--usb` or `--ble` to
 require one transport, and `--device` to select a `/dev/hidraw*` or BLE address
 when multiple keyboards are available.
+
+`battery` reads each Battery Service instance exposed by RMK, using its GATT
+descriptors to distinguish the central and split-peripheral levels. Battery
+Services are BLE-only, so the keyboard must already be connected over BLE;
+`--device AA:BB:CC:DD:EE:FF` selects one when several are connected. Use
+`battery --json` for automation.
 
 `keymap set` accepts `LAYER KEY KEYCODE` triples. A key may be a flat index or
 `row,col`; keycodes use familiar names such as `KC_A`, `MO(2)`, and

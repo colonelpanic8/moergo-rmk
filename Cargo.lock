@@ -998,6 +998,7 @@ name = "moergo-control"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "bluest",
  "clap",
  "embassy-futures",
  "heapless",
