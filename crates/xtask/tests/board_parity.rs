@@ -29,8 +29,29 @@ fn board_firmware_compiles_the_same_shared_sources_and_rmk_features() {
 
     let glove80_dependencies = glove80["dependencies"].as_table().unwrap();
     let go60_dependencies = go60["dependencies"].as_table().unwrap();
+    let mut glove80_features = glove80_dependencies["rmk"]["features"]
+        .as_array()
+        .unwrap()
+        .clone();
+    let mut go60_features = go60_dependencies["rmk"]["features"]
+        .as_array()
+        .unwrap()
+        .clone();
+    const GO60_FLASH_BUDGET_SWITCH: &str = "_no_split_peripheral_battery_service";
+    assert!(
+        !glove80_features
+            .iter()
+            .any(|feature| feature.as_str() == Some(GO60_FLASH_BUDGET_SWITCH))
+    );
+    assert!(
+        go60_features
+            .iter()
+            .any(|feature| feature.as_str() == Some(GO60_FLASH_BUDGET_SWITCH))
+    );
+    glove80_features.retain(|feature| feature.as_str() != Some(GO60_FLASH_BUDGET_SWITCH));
+    go60_features.retain(|feature| feature.as_str() != Some(GO60_FLASH_BUDGET_SWITCH));
     assert_eq!(
-        glove80_dependencies["rmk"]["features"], go60_dependencies["rmk"]["features"],
+        glove80_features, go60_features,
         "board crates must enable the same RMK capabilities"
     );
 

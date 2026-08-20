@@ -5,7 +5,8 @@
 `crates/glove80-rmk` and `crates/go60-rmk` are equally thin board workspaces.
 Shared embedded behavior belongs in `crates/moergo-rmk`; a board crate must not
 include or reach into its sibling's source tree. Keep their RMK feature sets
-aligned, and run `just parity-check` for changes to shared services.
+aligned, apart from the Go60-only `_no_split_peripheral_battery_service`
+flash-budget switch, and run `just parity-check` for changes to shared services.
 
 Board-local code is limited to physical wiring, pins/drivers, device identity,
 and hardware that has no sibling equivalent. Document intentional capability
@@ -14,7 +15,10 @@ hardware itself makes that impossible.
 
 The Go60 hardware configuration is transcribed from MoErgo's official
 `moergo-sc/zmk` board definitions. It uses 30 LEDs per half and a 40% hardware
-output ceiling.
+output ceiling. Its central omits the host-facing split-peripheral GATT battery
+service because that service overflows the application partition; split battery
+state remains available to firmware, while Glove80 exposes both halves to BLE
+hosts.
 
 The current port supports BLE split and the two Cirque Pinnacle trackpads
 (RMK's `cirque_pinnacle` driver, carried through the assembly; wiring in
