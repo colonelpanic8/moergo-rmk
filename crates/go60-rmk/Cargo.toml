@@ -15,6 +15,7 @@ rmk = { path = "../../dependencies/rmk/rmk", default-features = false, features 
     "watchdog",
     "nrf52840_ble",
     "split",
+    "_no_split_peripheral_battery_service",
     "async_matrix",
     "lighting",
     "adafruit_bl",
