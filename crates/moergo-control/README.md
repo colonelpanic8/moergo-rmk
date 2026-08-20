@@ -28,11 +28,11 @@ Device selection defaults to USB with BLE fallback. Use `--usb` or `--ble` to
 require one transport, and `--device` to select a `/dev/hidraw*` or BLE address
 when multiple keyboards are available.
 
-`battery` reads each Battery Service instance exposed by RMK, using its GATT
-descriptors to distinguish the central and split-peripheral levels. Battery
-Services are BLE-only, so the keyboard must already be connected over BLE;
-`--device AA:BB:CC:DD:EE:FF` selects one when several are connected. Use
-`battery --json` for automation.
+`battery` reads the central and split-peripheral levels over Rynk when USB is
+available. With `--ble`, it reads each standard Battery Service instance and
+uses its GATT descriptors to distinguish the halves; the keyboard must already
+be connected over BLE. `--device` selects one when several keyboards are
+connected, and `battery --json` emits a machine-readable report.
 
 `keymap set` accepts `LAYER KEY KEYCODE` triples. A key may be a flat index or
 `row,col`; keycodes use familiar names such as `KC_A`, `MO(2)`, and

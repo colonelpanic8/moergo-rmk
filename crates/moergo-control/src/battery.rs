@@ -4,6 +4,7 @@ use std::time::Duration;
 
 use anyhow::{anyhow, bail, ensure, Context, Result};
 use bluest::{Adapter, Characteristic, Device, Uuid};
+use rynk::rmk_types::battery::{BatteryStatus, ChargeState};
 use serde::Serialize;
 
 use crate::transport::{Preference, Selector};
@@ -19,15 +20,21 @@ const GATT_TIMEOUT: Duration = Duration::from_secs(10);
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub(crate) struct BatteryReading {
     pub(crate) name: String,
-    pub(crate) level: u8,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) level: Option<u8>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) charge_state: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) connected: Option<bool>,
 }
 
 #[derive(Debug, Serialize)]
-struct BatteryReport {
-    device: String,
+pub(crate) struct BatteryReport {
+    pub(crate) transport: &'static str,
+    pub(crate) device: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    name: Option<String>,
-    batteries: Vec<BatteryReading>,
+    pub(crate) name: Option<String>,
+    pub(crate) batteries: Vec<BatteryReading>,
 }
 
 struct OrderedReading {
@@ -36,15 +43,18 @@ struct OrderedReading {
 }
 
 pub fn run(selector: &Selector, json: bool) -> Result<()> {
-    if selector.preference == Preference::Usb {
-        bail!("battery levels are exposed over BLE GATT; use --ble instead of --usb");
-    }
-    if selector
-        .device
-        .as_deref()
-        .is_some_and(|value| value.starts_with("/dev/"))
-    {
-        bail!("battery levels are exposed over BLE GATT; pass a BLE address, not a device path");
+    match selector.preference {
+        Preference::Usb => return crate::rynk_client::run_battery(selector, json),
+        Preference::Ble => {}
+        Preference::Auto
+            if !selector
+                .device
+                .as_deref()
+                .is_some_and(crate::transport::is_ble_address) =>
+        {
+            return crate::rynk_client::run_battery(selector, json);
+        }
+        Preference::Auto => {}
     }
 
     let runtime =
@@ -75,16 +85,12 @@ async fn query(requested: Option<&str>, json: bool) -> Result<()> {
     let device_name = device.name_async().await.ok();
     let readings = read_batteries(&device).await?;
     let report = BatteryReport {
+        transport: "ble-gatt",
         device: device_id,
         name: device_name,
         batteries: readings,
     };
-    if json {
-        println!("{}", serde_json::to_string_pretty(&report)?);
-    } else {
-        print!("{}", render(&report.batteries));
-    }
-    Ok(())
+    emit(&report, json)
 }
 
 fn select_device(mut devices: Vec<Device>, requested: Option<&str>) -> Result<Device> {
@@ -169,9 +175,41 @@ async fn read_characteristic(characteristic: Characteristic) -> Result<OrderedRe
         order,
         reading: BatteryReading {
             name: user_description.unwrap_or(fallback),
-            level,
+            level: Some(level),
+            charge_state: None,
+            connected: None,
         },
     })
+}
+
+impl BatteryReading {
+    pub(crate) fn from_status(
+        name: String,
+        status: BatteryStatus,
+        connected: Option<bool>,
+    ) -> Self {
+        let (level, charge_state) = match status {
+            BatteryStatus::Unavailable => (None, None),
+            BatteryStatus::Available {
+                charge_state,
+                level,
+            } => (level, Some(render_charge_state(charge_state))),
+        };
+        Self {
+            name,
+            level,
+            charge_state,
+            connected,
+        }
+    }
+}
+
+fn render_charge_state(state: ChargeState) -> &'static str {
+    match state {
+        ChargeState::Charging => "charging",
+        ChargeState::Discharging => "discharging",
+        ChargeState::Unknown => "unknown",
+    }
 }
 
 fn decode_level(value: &[u8]) -> Result<u8> {
@@ -210,8 +248,31 @@ fn presentation_identity(description: Option<u16>) -> (String, u16) {
 pub(crate) fn render(readings: &[BatteryReading]) -> String {
     readings
         .iter()
-        .map(|reading| format!("{}: {}%\n", reading.name, reading.level))
+        .map(|reading| {
+            let value = match reading.level {
+                Some(level) => format!("{level}%"),
+                None => "unavailable".into(),
+            };
+            let charge = reading
+                .charge_state
+                .map(|state| format!(" ({state})"))
+                .unwrap_or_default();
+            let connection = match reading.connected {
+                Some(false) => " (disconnected)",
+                _ => "",
+            };
+            format!("{}: {value}{charge}{connection}\n", reading.name)
+        })
         .collect()
+}
+
+pub(crate) fn emit(report: &BatteryReport, json: bool) -> Result<()> {
+    if json {
+        println!("{}", serde_json::to_string_pretty(report)?);
+    } else {
+        print!("{}", render(&report.batteries));
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -247,14 +308,38 @@ mod tests {
             render(&[
                 BatteryReading {
                     name: "Central".into(),
-                    level: 73,
+                    level: Some(73),
+                    charge_state: Some("discharging"),
+                    connected: None,
                 },
                 BatteryReading {
                     name: "Peripheral 0".into(),
-                    level: 68,
+                    level: None,
+                    charge_state: None,
+                    connected: Some(false),
                 },
             ]),
-            "Central: 73%\nPeripheral 0: 68%\n"
+            "Central: 73% (discharging)\nPeripheral 0: unavailable (disconnected)\n"
+        );
+    }
+
+    #[test]
+    fn converts_rynk_battery_status() {
+        assert_eq!(
+            BatteryReading::from_status(
+                "Central".into(),
+                BatteryStatus::Available {
+                    charge_state: ChargeState::Charging,
+                    level: Some(91),
+                },
+                None,
+            ),
+            BatteryReading {
+                name: "Central".into(),
+                level: Some(91),
+                charge_state: Some("charging"),
+                connected: None,
+            }
         );
     }
 

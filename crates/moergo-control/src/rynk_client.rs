@@ -90,6 +90,69 @@ pub fn run_version(selector: &Selector) -> Result<()> {
     })
 }
 
+/// Read the central and split-peripheral battery snapshots over Rynk.
+pub fn run_battery(selector: &Selector, json: bool) -> Result<()> {
+    let runtime =
+        tokio::runtime::Runtime::new().context("could not create the Rynk async runtime")?;
+    runtime.block_on(async {
+        match select_device(selector).await? {
+            Device::Hid(device) => run_battery_device(device, "usb-rynk", json).await,
+            Device::Ble(device) => run_battery_device(device, "ble-rynk", json).await,
+        }
+    })
+}
+
+async fn run_battery_device<D: RynkDevice>(
+    device: D,
+    transport: &'static str,
+    json: bool,
+) -> Result<()> {
+    let label = device.label();
+    let (client, mut driver) = connect_device(device, &label).await?;
+    match select(
+        driver.run(&client),
+        read_batteries(&client, transport, label, json),
+    )
+    .await
+    {
+        Either::First(error) => Err(anyhow!("Rynk connection ended: {error}")),
+        Either::Second(result) => result,
+    }
+}
+
+async fn read_batteries(
+    client: &Client,
+    transport: &'static str,
+    device: String,
+    json: bool,
+) -> Result<()> {
+    let capabilities = client.get_capabilities().await?;
+    let info = client.get_device_info().await?;
+    let mut batteries = Vec::with_capacity(usize::from(capabilities.num_split_peripherals) + 1);
+    batteries.push(crate::battery::BatteryReading::from_status(
+        "Central".into(),
+        client.get_battery_status().await?,
+        None,
+    ));
+    for slot in 0..capabilities.num_split_peripherals {
+        let status = client.get_peripheral_status(slot).await?;
+        batteries.push(crate::battery::BatteryReading::from_status(
+            format!("Peripheral {slot}"),
+            status.battery,
+            Some(status.connected),
+        ));
+    }
+    crate::battery::emit(
+        &crate::battery::BatteryReport {
+            transport,
+            device,
+            name: Some(info.product_name.as_str().into()),
+            batteries,
+        },
+        json,
+    )
+}
+
 pub fn run_maintenance(selector: &Selector) -> Result<()> {
     let runtime =
         tokio::runtime::Runtime::new().context("could not create the Rynk async runtime")?;
