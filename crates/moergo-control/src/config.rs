@@ -8,19 +8,21 @@ use std::time::Duration;
 use anyhow::{anyhow, bail, Context, Result};
 use clap::{Subcommand, ValueEnum};
 use moergo_config::{
-    background_from_wire, background_to_wire, conditional_scene_from_wire,
-    conditional_scene_to_wire, differences, effects_from_wire, effects_to_wire, live_param_tables,
-    output_mode_from_wire, output_mode_to_wire, params_to_writes, runtime_config_from_moergo_json,
-    scene_from_wire, scene_policy_from_wire, scene_policy_to_wire, scene_to_wire,
-    snapshot_to_moergo_json, BehaviorSnapshot, EffectParams, EffectsConfig, LightingConfig,
-    LightingSnapshot, OutputModeConfig, ParamSpec, RuntimeConfig, Snapshot,
+    background_from_wire, background_to_wire, conditional_scene_from_advanced_wire,
+    conditional_scene_from_wire, conditional_scene_to_advanced_wire, conditional_scene_to_wire,
+    differences, effects_from_wire, effects_to_wire, live_param_tables, output_mode_from_wire,
+    output_mode_to_wire, params_to_writes, runtime_config_from_moergo_json, scene_from_wire,
+    scene_policy_from_wire, scene_policy_to_wire, scene_to_wire, snapshot_to_moergo_json,
+    BehaviorSnapshot, EffectParams, EffectsConfig, LightingConfig, LightingSnapshot,
+    OutputModeConfig, ParamSpec, RuntimeConfig, Snapshot,
 };
 use rynk::rmk_types::morse::MorseProfileName;
 use rynk::rmk_types::pointing::PointingMode;
 use rynk::rmk_types::protocol::rynk::{
-    BleName, Cmd, LayerMetadata, LightingError, LightingExtendedConditionalSceneCell,
-    LightingExtensionNameKind, LightingExtensionParamsRequest, LightingFeatureFlags,
-    LightingMutableState, MorseProfileEntry as WireMorseProfileEntry, PointingCapabilities,
+    BleName, Cmd, LayerMetadata, LightingAdvancedConditionalSceneCell, LightingError,
+    LightingExtendedConditionalSceneCell, LightingExtensionNameKind,
+    LightingExtensionParamsRequest, LightingFeatureFlags, LightingMutableState,
+    MorseProfileEntry as WireMorseProfileEntry, PointingCapabilities,
     PointingConfig as WirePointingConfig, RynkError, SetAutoMouseLayerConfigsRequest,
     SetKeymapBulkRequest, SetLightingExtensionLayersRequest, SetLightingExtensionParamRequest,
     SetLightingExtensionStateRequest, SetLightingLayerPolicyRequest, SetLightingOutputModeRequest,
@@ -136,6 +138,25 @@ async fn desired_snapshot(client: &Client, config: RuntimeConfig) -> Result<Snap
         }
     }
     config.snapshot_with_topology(&topology)
+}
+
+async fn read_advanced_runtime_conditionals(
+    client: &Client,
+) -> Result<Vec<LightingAdvancedConditionalSceneCell>> {
+    let mut last_error = None;
+    for _ in 0..CONDITIONAL_READ_ATTEMPTS {
+        match tokio::time::timeout(
+            CONDITIONAL_READ_TIMEOUT,
+            client.read_all_lighting_advanced_runtime_conditional_scenes(),
+        )
+        .await
+        {
+            Ok(Ok((_, cells))) => return Ok(cells),
+            Ok(Err(error)) => last_error = Some(anyhow!(error)),
+            Err(_) => last_error = Some(anyhow!("advanced conditional table read timed out")),
+        }
+    }
+    Err(last_error.unwrap_or_else(|| anyhow!("advanced conditional table read failed")))
 }
 
 async fn read_extended_runtime_conditionals(
@@ -323,6 +344,17 @@ async fn read_snapshot(client: &Client) -> Result<Snapshot> {
     // rather than an empty table, so a file that names no rules does not read
     // as "delete what the board has".
     let conditional_scenes = if lighting_caps
+        .features
+        .contains(LightingFeatureFlags::RUNTIME_LAYER_INDICATOR_CONDITIONS)
+    {
+        Some(
+            read_advanced_runtime_conditionals(client)
+                .await?
+                .into_iter()
+                .map(conditional_scene_from_advanced_wire)
+                .collect::<Result<Vec<_>>>()?,
+        )
+    } else if lighting_caps
         .features
         .contains(LightingFeatureFlags::RUNTIME_EFFECTS_CONDITIONS)
     {
@@ -998,6 +1030,14 @@ async fn write_layer(
 }
 
 async fn apply_snapshot(client: &Client, desired: &Snapshot, before: &Snapshot) -> Result<()> {
+    let lighting_features = if desired.lighting.is_some() {
+        Some(client.get_lighting_capabilities().await?.features)
+    } else {
+        None
+    };
+    if let Some(lighting) = &desired.lighting {
+        require_layer_conditions_capability(lighting, lighting_features.unwrap())?;
+    }
     let capabilities = client.get_capabilities().await?;
     if desired.rows != capabilities.num_rows || desired.cols != capabilities.num_cols {
         bail!(
@@ -1192,17 +1232,24 @@ async fn apply_snapshot(client: &Client, desired: &Snapshot, before: &Snapshot) 
                 ),
                 Some(live) if live == wanted_conditional => {}
                 Some(_) => {
-                    let cells = wanted_conditional
-                        .iter()
-                        .map(conditional_scene_to_wire)
-                        .collect::<Result<Vec<_>>>()?;
                     let status = client.get_lighting_runtime_conditional_scene_status().await?;
-                    let extended_conditionals = client
-                        .get_lighting_capabilities()
-                        .await?
-                        .features
-                        .contains(LightingFeatureFlags::RUNTIME_EFFECTS_CONDITIONS);
-                    if extended_conditionals {
+                    let features = lighting_features.unwrap();
+                    if features.contains(LightingFeatureFlags::RUNTIME_LAYER_INDICATOR_CONDITIONS) {
+                        let cells = wanted_conditional
+                            .iter()
+                            .map(conditional_scene_to_advanced_wire)
+                            .collect::<Result<Vec<_>>>()?;
+                        client
+                            .replace_all_lighting_advanced_runtime_conditional_scenes(
+                                status.revision,
+                                &cells,
+                            )
+                            .await?;
+                    } else if features.contains(LightingFeatureFlags::RUNTIME_EFFECTS_CONDITIONS) {
+                        let cells = wanted_conditional
+                            .iter()
+                            .map(conditional_scene_to_wire)
+                            .collect::<Result<Vec<_>>>()?;
                         client
                             .replace_all_lighting_extended_runtime_conditional_scenes(
                                 status.revision,
@@ -1218,7 +1265,10 @@ async fn apply_snapshot(client: &Client, desired: &Snapshot, before: &Snapshot) 
                                 "conditional rule {gated} names a connection or effects condition but the keyboard's firmware predates the extended conditional cell"
                             );
                         }
-                        let legacy = cells.into_iter().map(|c| c.cell).collect::<Vec<_>>();
+                        let legacy = wanted_conditional
+                            .iter()
+                            .map(|cell| conditional_scene_to_wire(cell).map(|cell| cell.cell))
+                            .collect::<Result<Vec<_>>>()?;
                         client
                             .replace_all_lighting_runtime_conditional_scenes(status.revision, &legacy)
                             .await?;
@@ -1237,6 +1287,21 @@ async fn apply_snapshot(client: &Client, desired: &Snapshot, before: &Snapshot) 
                 .replace_all_lighting_scenes(state.revision, &cells)
                 .await?;
         }
+    }
+    Ok(())
+}
+
+fn require_layer_conditions_capability(
+    lighting: &LightingSnapshot,
+    features: LightingFeatureFlags,
+) -> Result<()> {
+    if !features.contains(LightingFeatureFlags::RUNTIME_LAYER_INDICATOR_CONDITIONS)
+        && lighting
+            .conditional_scenes
+            .as_ref()
+            .is_some_and(|cells| cells.iter().any(|cell| cell.layers.is_some()))
+    {
+        bail!("configuration uses layer-set conditions but the keyboard does not advertise advanced conditional-scene support");
     }
     Ok(())
 }
@@ -1288,6 +1353,39 @@ mod tests {
     use rynk::rmk_types::protocol::rynk::{
         PointingDeviceConfig, POINTING_MODE_CURSOR_REMAP, POINTING_MODE_KEYPAD,
     };
+
+    #[test]
+    fn layer_conditions_require_advanced_firmware_before_apply() {
+        let config: LightingConfig = toml::from_str(
+            r##"
+            brightness = 100
+            output_mode = "always-on"
+            scene_policy = "active-stack"
+            [[conditional_scene]]
+            led = 1
+            color = "#ff00ff"
+            layers = { active = [2, 4], inactive = [3] }
+            [background]
+            enabled = false
+            hue = 0
+            saturation = 0
+            value = 0
+            speed = 0
+            mode = "solid"
+        "##,
+        )
+        .unwrap();
+        let mut snapshot = config.snapshot().unwrap();
+        let legacy = LightingFeatureFlags(LightingFeatureFlags::RUNTIME_EFFECTS_CONDITIONS);
+        assert!(require_layer_conditions_capability(&snapshot, legacy).is_err());
+        assert!(require_layer_conditions_capability(
+            &snapshot,
+            LightingFeatureFlags(LightingFeatureFlags::RUNTIME_LAYER_INDICATOR_CONDITIONS)
+        )
+        .is_ok());
+        snapshot.conditional_scenes.as_mut().unwrap()[0].layers = None;
+        assert!(require_layer_conditions_capability(&snapshot, legacy).is_ok());
+    }
 
     #[test]
     fn optional_endpoints_do_not_hide_transport_failures() {

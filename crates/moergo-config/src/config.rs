@@ -16,14 +16,14 @@ use rynk::rmk_types::pointing::{
 };
 use rynk::rmk_types::protocol::rynk::{
     BehaviorConfig as WireBehaviorConfig, BehaviorOptions as WireBehaviorOptions, LayerMetadata,
-    LightingActiveTransport, LightingBackgroundMode, LightingBackgroundState,
-    LightingBatteryCondition, LightingBondedSlotCondition, LightingChargeCondition,
-    LightingConditionSet, LightingConditionalSceneCell, LightingConnectionCondition,
-    LightingEffect, LightingEffectsCondition, LightingExtendedConditionalSceneCell,
-    LightingExtensionState, LightingLayerCondition, LightingLayerPolicy, LightingLedId,
-    LightingMatrixPosition, LightingNodeId, LightingOutputMode, LightingRgb8, LightingSceneCell,
-    LightingZoneId, PointingConfig as WirePointingConfig,
-    PointingDeviceConfig as WirePointingDeviceConfig,
+    LightingActiveTransport, LightingAdvancedConditionalSceneCell, LightingBackgroundMode,
+    LightingBackgroundState, LightingBatteryCondition, LightingBondedSlotCondition,
+    LightingChargeCondition, LightingConditionSet, LightingConditionalSceneCell,
+    LightingConnectionCondition, LightingEffect, LightingEffectsCondition,
+    LightingExtendedConditionalSceneCell, LightingExtensionState, LightingLayerCondition,
+    LightingLayerPolicy, LightingLayersCondition, LightingLedId, LightingMatrixPosition,
+    LightingNodeId, LightingOutputMode, LightingRgb8, LightingSceneCell, LightingZoneId,
+    PointingConfig as WirePointingConfig, PointingDeviceConfig as WirePointingDeviceConfig,
     PointingLayerOverride as WirePointingLayerOverride, BLE_NAME_MAX_LEN, LAYER_NAME_MAX_LEN,
 };
 use rynk::{KeyId, KeyTopology, LogicalKey};
@@ -547,6 +547,7 @@ impl LayerConfig {
                                 output_mode: when.output_mode,
                                 connection: when.connection,
                                 effects: when.effects,
+                                layers: when.layers.clone(),
                             });
                         }
                     }
@@ -651,9 +652,11 @@ fn is_solid(effect: &EffectKind) -> bool {
 }
 
 /// The conditions a layer-attached rule adds to its layer's own.
-#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct KeyConditionConfig {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub layers: Option<LayersConditionConfig>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub battery: Option<BatteryConditionConfig>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1190,6 +1193,8 @@ pub struct SceneConfig {
 /// [`SceneConfig`].
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 pub struct ConditionalSceneConfig {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub layers: Option<LayersConditionConfig>,
     #[serde(flatten)]
     pub target: KeyTargetConfig,
     pub color: String,
@@ -1289,6 +1294,47 @@ pub struct LayerConditionConfig {
     pub layer: u8,
     #[serde(default = "yes")]
     pub active: bool,
+}
+
+/// Every active layer must be present and every inactive layer absent.
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct LayersConditionConfig {
+    #[serde(default)]
+    pub active: Vec<u8>,
+    #[serde(default)]
+    pub inactive: Vec<u8>,
+}
+
+impl LayersConditionConfig {
+    fn to_wire(&self) -> Result<LightingLayersCondition> {
+        let mask = |layers: &[u8]| -> Result<u32> {
+            layers.iter().try_fold(0u32, |mask, &layer| {
+                if layer >= 32 {
+                    bail!("layer-set conditions support layer indices 0..=31, got {layer}");
+                }
+                Ok(mask | (1u32 << layer))
+            })
+        };
+        let active = mask(&self.active)?;
+        let inactive = mask(&self.inactive)?;
+        if active & inactive != 0 {
+            bail!("layer-set condition requires the same layer active and inactive");
+        }
+        Ok(LightingLayersCondition { active, inactive })
+    }
+
+    fn from_wire(condition: LightingLayersCondition) -> Self {
+        let layers = |mask| {
+            (0..32)
+                .filter(|layer| mask & (1u32 << layer) != 0)
+                .collect()
+        };
+        Self {
+            active: layers(condition.active),
+            inactive: layers(condition.inactive),
+        }
+    }
 }
 
 /// Gate a rule on one half's battery. Levels are percentages; omitting a bound
@@ -2767,6 +2813,9 @@ impl LightingConfig {
         let mut conditional_scenes = self.conditional_scenes.clone();
         for (index, cell) in conditional_scenes.iter_mut().enumerate() {
             cell.color = normalize_color(&cell.color)?;
+            if let Some(layers) = &mut cell.layers {
+                *layers = LayersConditionConfig::from_wire(layers.to_wire()?);
+            }
             validate_conditional_scene(index, cell)?;
         }
         let mut scenes = self.scenes.clone();
@@ -2791,7 +2840,11 @@ impl LightingConfig {
             scenes.push(cell);
         }
         scenes.sort();
-        for (index, cell) in layer_conditionals.iter().enumerate() {
+        let mut layer_conditionals = layer_conditionals;
+        for (index, cell) in layer_conditionals.iter_mut().enumerate() {
+            if let Some(layers) = &mut cell.layers {
+                *layers = LayersConditionConfig::from_wire(layers.to_wire()?);
+            }
             validate_conditional_scene(conditional_scenes.len() + index, cell)?;
         }
         conditional_scenes.extend(layer_conditionals);
@@ -3484,6 +3537,24 @@ pub fn normalize_color(text: &str) -> Result<String> {
 /// bounds the firmware would otherwise reject on apply. Nothing here contacts
 /// the keyboard, so `config validate` stays usable offline.
 pub fn validate_conditional_scene(index: usize, cell: &ConditionalSceneConfig) -> Result<()> {
+    if let Some(layers) = &cell.layers {
+        let masks = layers
+            .to_wire()
+            .with_context(|| format!("conditional rule {index}"))?;
+        if let Some(layer) = cell.layer {
+            let conflicts = if layer.active {
+                masks.inactive
+            } else {
+                masks.active
+            };
+            if layer.layer < 32 && conflicts & (1u32 << layer.layer) != 0 {
+                bail!(
+                    "conditional rule {index} has contradictory conditions for layer {}",
+                    layer.layer
+                );
+            }
+        }
+    }
     let timings_set = cell.period_ms.is_some()
         || cell.phase_ms.is_some()
         || cell.duty.is_some()
@@ -3691,6 +3762,7 @@ pub fn conditional_scene_from_wire(
     let cell = extended.cell;
     let (color, effect, period_ms, phase_ms, duty, step_ms) = effect_from_wire(cell.effect);
     ConditionalSceneConfig {
+        layers: None,
         connection,
         effects,
         target: KeyTargetConfig::led(cell.led_id.0),
@@ -3769,6 +3841,9 @@ pub fn scene_to_wire(cell: &SceneConfig) -> Result<LightingSceneCell> {
 pub fn conditional_scene_to_wire(
     cell: &ConditionalSceneConfig,
 ) -> Result<LightingExtendedConditionalSceneCell> {
+    if cell.layers.is_some() {
+        bail!("layer-set conditions require advanced conditional-scene endpoints");
+    }
     let connection = cell.connection.map(|c| LightingConnectionCondition {
         transport: c.transport.map(|transport| match transport {
             TransportConfig::Usb => LightingActiveTransport::Usb,
@@ -3827,6 +3902,37 @@ pub fn conditional_scene_to_wire(
             .effects
             .map(|c| LightingEffectsCondition { enabled: c.enabled }),
     })
+}
+
+pub fn conditional_scene_from_advanced_wire(
+    cell: LightingAdvancedConditionalSceneCell,
+) -> Result<ConditionalSceneConfig> {
+    if cell.indicators.is_some() {
+        bail!("host lock-indicator conditions cannot yet be represented in runtime TOML");
+    }
+    let mut result = conditional_scene_from_wire(LightingExtendedConditionalSceneCell {
+        cell: cell.cell,
+        connection: cell.connection,
+        effects: cell.effects,
+    });
+    result.layers = cell.layers.map(LayersConditionConfig::from_wire);
+    Ok(result)
+}
+
+pub fn conditional_scene_to_advanced_wire(
+    cell: &ConditionalSceneConfig,
+) -> Result<LightingAdvancedConditionalSceneCell> {
+    validate_conditional_scene(0, cell)?;
+    let mut legacy = cell.clone();
+    legacy.layers = None;
+    let mut result =
+        LightingAdvancedConditionalSceneCell::from(conditional_scene_to_wire(&legacy)?);
+    result.layers = cell
+        .layers
+        .as_ref()
+        .map(LayersConditionConfig::to_wire)
+        .transpose()?;
+    Ok(result)
 }
 
 pub fn background_from_wire(state: LightingBackgroundState) -> BackgroundConfig {
@@ -5196,6 +5302,7 @@ Density = 6
     #[test]
     fn reordered_conditional_rules_are_a_difference() {
         let rule = |led: u16| ConditionalSceneConfig {
+            layers: None,
             connection: None,
             target: KeyTargetConfig::led(led),
             color: "#0040a0".into(),
@@ -5277,6 +5384,7 @@ Density = 6
         let with_rule = {
             let mut snap = lighting_snapshot(None, None);
             snap.conditional_scenes = Some(vec![ConditionalSceneConfig {
+                layers: None,
                 connection: None,
                 target: KeyTargetConfig::led(75),
                 color: "#0040a0".into(),
@@ -5373,8 +5481,113 @@ Density = 6
     }
 
     #[test]
+    fn layer_conditions_round_trip_and_normalize_sets() {
+        let cell: ConditionalSceneConfig = toml::from_str(
+            r##"
+            led = 1
+            color = "#ff00ff"
+            layers = { active = [31, 4, 2, 4], inactive = [3, 1] }
+        "##,
+        )
+        .unwrap();
+        let mut lighting = empty_lighting();
+        lighting.conditional_scenes.push(cell.clone());
+        let snapshot = lighting.snapshot().unwrap();
+        let canonical = &snapshot.conditional_scenes.as_ref().unwrap()[0];
+        assert_eq!(canonical.layers.as_ref().unwrap().active, vec![2, 4, 31]);
+        assert_eq!(canonical.layers.as_ref().unwrap().inactive, vec![1, 3]);
+        let wire = conditional_scene_to_advanced_wire(canonical).unwrap();
+        assert_eq!(wire.layers.unwrap().active, (1 << 31) | (1 << 4) | (1 << 2));
+        assert_eq!(wire.layers.unwrap().inactive, (1 << 3) | (1 << 1));
+        assert_eq!(
+            conditional_scene_from_advanced_wire(wire).unwrap(),
+            *canonical
+        );
+        let encoded = toml::to_string(canonical).unwrap();
+        assert_eq!(
+            toml::from_str::<ConditionalSceneConfig>(&encoded).unwrap(),
+            *canonical
+        );
+        assert!(conditional_scene_to_wire(&cell).is_err());
+
+        let mut unsupported = wire;
+        unsupported.indicators = Some(
+            rynk::rmk_types::protocol::rynk::LightingIndicatorCondition {
+                num_lock: None,
+                caps_lock: Some(true),
+                scroll_lock: None,
+            },
+        );
+        assert!(conditional_scene_from_advanced_wire(unsupported).is_err());
+    }
+
+    #[test]
+    fn layer_conditions_reject_out_of_range_and_contradictory_gates() {
+        for gate in [
+            "layers = { active = [32] }",
+            "layers = { inactive = [255] }",
+            "layers = { active = [2], inactive = [2] }",
+            "layer = { layer = 2, active = true }\nlayers = { inactive = [2] }",
+            "layer = { layer = 2, active = false }\nlayers = { active = [2] }",
+        ] {
+            let cell: ConditionalSceneConfig =
+                toml::from_str(&format!("led = 1\ncolor = \"#ff00ff\"\n{gate}")).unwrap();
+            assert!(validate_conditional_scene(0, &cell).is_err(), "{gate}");
+            assert!(conditional_scene_to_advanced_wire(&cell).is_err(), "{gate}");
+        }
+    }
+
+    #[test]
+    fn layer_conditions_on_key_rules_include_the_containing_layer() {
+        let mut config = minimal_runtime_config(None);
+        config.lighting = Some(empty_lighting());
+        config.layers[0].key_entries = vec![toml::from_str(
+            r##"
+            key = [0, 0]
+            [[rule]]
+            color = "#ff00ff"
+            when = { layers = { active = [4, 2], inactive = [3] } }
+        "##,
+        )
+        .unwrap()];
+        let snapshot = config.snapshot().unwrap();
+        let cells = snapshot.lighting.unwrap().conditional_scenes.unwrap();
+        assert_eq!(
+            cells[0].layer,
+            Some(LayerConditionConfig {
+                layer: 0,
+                active: true
+            })
+        );
+        assert_eq!(cells[0].layers.as_ref().unwrap().active, vec![2, 4]);
+        let encoded = config.to_toml().unwrap();
+        assert_eq!(
+            RuntimeConfig::from_toml(&encoded)
+                .unwrap()
+                .snapshot()
+                .unwrap()
+                .lighting
+                .unwrap()
+                .conditional_scenes
+                .unwrap(),
+            cells
+        );
+        config.layers[0].key_entries[0].rules[0]
+            .when
+            .as_mut()
+            .unwrap()
+            .layers
+            .as_mut()
+            .unwrap()
+            .inactive
+            .push(0);
+        assert!(config.snapshot().is_err());
+    }
+
+    #[test]
     fn conditional_rules_round_trip_through_the_wire_and_reject_bad_batteries() {
         let mut cell = ConditionalSceneConfig {
+            layers: None,
             connection: None,
             target: KeyTargetConfig::led(75),
             color: "#0040a0".into(),
