@@ -4296,7 +4296,7 @@ color = "#0000ff"
             resolved
                 .scenes
                 .iter()
-                .map(|scene| scene.target.clone())
+                .map(|scene| scene.target)
                 .collect::<Vec<_>>(),
             vec![
                 KeyTargetConfig::led(34),
