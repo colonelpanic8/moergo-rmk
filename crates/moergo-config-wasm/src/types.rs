@@ -11,10 +11,10 @@ use rynk::rmk_types::combo::ComboDefinition;
 use rynk::rmk_types::fork::Fork;
 use rynk::rmk_types::morse::Morse;
 use rynk::rmk_types::protocol::rynk::{
-    BehaviorConfig, BehaviorOptions, LayerMetadata, LightingBackgroundState,
-    LightingExtendedConditionalSceneCell, LightingExtensionParam, LightingExtensionState,
-    LightingLayerPolicy, LightingLedId, LightingMatrixPosition, LightingOutputMode,
-    LightingSceneCell, LightingZone, LightingZoneId, MorseProfileEntry, PointingConfig,
+    BehaviorConfig, BehaviorOptions, LayerMetadata, LightingAdvancedConditionalSceneCell,
+    LightingBackgroundState, LightingExtensionParam, LightingExtensionState, LightingLayerPolicy,
+    LightingLedId, LightingMatrixPosition, LightingOutputMode, LightingSceneCell, LightingZone,
+    LightingZoneId, MorseProfileEntry, PointingConfig,
 };
 use serde::{Deserialize, Serialize};
 use tsify::Tsify;
@@ -151,7 +151,7 @@ pub struct LightingSnapshot {
     /// one: a file naming rules conflicts with the former and not the latter.
     /// Cells are the extended form; hosts talking to older firmware pass
     /// `connection: undefined` on every cell.
-    pub conditional_scenes: Option<Vec<LightingExtendedConditionalSceneCell>>,
+    pub conditional_scenes: Option<Vec<LightingAdvancedConditionalSceneCell>>,
 }
 
 /// The board's advertised semantic topology, as the Rynk lighting metadata

@@ -493,6 +493,22 @@ async fn operate_lighting(client: &Client, command: &LightingCommand) -> Result<
                 (LightingFeatureFlags::PHYSICAL_GEOMETRY, "physical geometry"),
                 (LightingFeatureFlags::ZONES, "zones"),
                 (LightingFeatureFlags::ROUTING, "routing"),
+                (
+                    LightingFeatureFlags::RUNTIME_CONDITIONAL_SCENES,
+                    "runtime conditional scenes",
+                ),
+                (
+                    LightingFeatureFlags::RUNTIME_CONNECTION_CONDITIONS,
+                    "connection conditions",
+                ),
+                (
+                    LightingFeatureFlags::RUNTIME_EFFECTS_CONDITIONS,
+                    "effects conditions",
+                ),
+                (
+                    LightingFeatureFlags::RUNTIME_LAYER_INDICATOR_CONDITIONS,
+                    "layer-set and lock-indicator conditions",
+                ),
             ]
             .into_iter()
             .filter_map(|(bit, name)| caps.features.contains(bit).then_some(name))

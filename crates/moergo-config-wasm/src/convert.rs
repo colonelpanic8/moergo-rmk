@@ -163,13 +163,17 @@ fn lighting_from_wire(
         // firmware defaults with.
         params: Some(sets),
         scenes,
-        conditional_scenes: lighting.conditional_scenes.as_ref().map(|cells| {
-            cells
-                .iter()
-                .copied()
-                .map(model::conditional_scene_from_wire)
-                .collect()
-        }),
+        conditional_scenes: lighting
+            .conditional_scenes
+            .as_ref()
+            .map(|cells| {
+                cells
+                    .iter()
+                    .copied()
+                    .map(model::conditional_scene_from_advanced_wire)
+                    .collect::<anyhow::Result<Vec<_>>>()
+            })
+            .transpose()?,
     })
 }
 
@@ -290,7 +294,7 @@ fn lighting_to_wire(
             .map(|cells| {
                 cells
                     .iter()
-                    .map(model::conditional_scene_to_wire)
+                    .map(model::conditional_scene_to_advanced_wire)
                     .collect::<anyhow::Result<Vec<_>>>()
             })
             .transpose()?,

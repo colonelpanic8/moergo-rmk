@@ -3916,6 +3916,7 @@ pub fn conditional_scene_from_advanced_wire(
         effects: cell.effects,
     });
     result.layers = cell.layers.map(LayersConditionConfig::from_wire);
+    validate_conditional_scene(0, &result)?;
     Ok(result)
 }
 
@@ -5519,6 +5520,20 @@ Density = 6
             },
         );
         assert!(conditional_scene_from_advanced_wire(unsupported).is_err());
+    }
+
+    #[test]
+    fn layer_conditions_readback_rejects_contradictory_gates() {
+        let cell: ConditionalSceneConfig = toml::from_str("led = 1\ncolor = \"#ff00ff\"").unwrap();
+        let valid = conditional_scene_to_advanced_wire(&cell).unwrap();
+        for (singular, active, inactive) in [(None, 1, 1), (Some(true), 0, 1), (Some(false), 1, 0)]
+        {
+            let mut wire = valid;
+            wire.cell.conditions.layer =
+                singular.map(|active| LightingLayerCondition { layer: 0, active });
+            wire.layers = Some(LightingLayersCondition { active, inactive });
+            assert!(conditional_scene_from_advanced_wire(wire).is_err());
+        }
     }
 
     #[test]
