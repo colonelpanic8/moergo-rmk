@@ -15,7 +15,8 @@ use rynk::rmk_types::protocol::rynk::{
     LightingMutableState, LightingNodeId, LightingOverlayCell, LightingRgb8, LightingSceneCell,
     LightingState, PutLightingOverlayChunkRequest, RynkError, SetLightingExtensionParamRequest,
     SetLightingLayerPolicyRequest, SetLightingOverlayRequest, SetLightingSceneCellRequest,
-    SetLightingStateRequest, UnsetLightingOverlayRequest, UnsetLightingSceneCellRequest,
+    SetLightingStateRequest, StorageResetMode, UnsetLightingOverlayRequest,
+    UnsetLightingSceneCellRequest,
 };
 use rynk::{Client, RynkDevice, RynkHostError};
 use rynk_ble::BleDevice;
@@ -32,6 +33,9 @@ const RYNK_BOOTLOADER_TIMEOUT: Duration = Duration::from_secs(3);
 // A peripheral command sits behind any already-queued split lighting frames;
 // allow the BLE link time to drain them before declaring failure.
 const RYNK_PERIPHERAL_BOOTLOADER_TIMEOUT: Duration = Duration::from_secs(15);
+// A storage wipe erases the whole settings partition through radio-scheduled
+// flash timeslots before the firmware reboots; measured around fifteen seconds.
+const RYNK_STORAGE_WIPE_TIMEOUT: Duration = Duration::from_secs(30);
 
 enum Device {
     Hid(HidDevice),
@@ -291,6 +295,11 @@ pub enum ResetTarget {
     Bootloader,
     /// Route a bootloader jump to the peripheral; the central stays online.
     PeripheralBootloader,
+    /// Erase every persisted setting on the central. The firmware's storage
+    /// task reboots the keyboard itself once the erase finishes, so the
+    /// disconnect is the completion signal; a host-sent reboot would race the
+    /// erase and win.
+    StorageWipe,
 }
 
 pub fn run_reset(selector: &Selector, target: ResetTarget) -> Result<()> {
@@ -340,10 +349,10 @@ async fn run_reset_device<D: RynkDevice>(device: D, target: ResetTarget) -> Resu
             std::future::pending::<Result<()>>().await
         }
     };
-    let timeout = if target == ResetTarget::PeripheralBootloader {
-        RYNK_PERIPHERAL_BOOTLOADER_TIMEOUT
-    } else {
-        RYNK_BOOTLOADER_TIMEOUT
+    let timeout = match target {
+        ResetTarget::PeripheralBootloader => RYNK_PERIPHERAL_BOOTLOADER_TIMEOUT,
+        ResetTarget::StorageWipe => RYNK_STORAGE_WIPE_TIMEOUT,
+        ResetTarget::Reboot | ResetTarget::Bootloader => RYNK_BOOTLOADER_TIMEOUT,
     };
     let outcome = tokio::time::timeout(timeout, select(driver.run(&client), request)).await;
     match outcome {
@@ -366,6 +375,7 @@ async fn request_reset(client: &Client, target: ResetTarget) -> Result<()> {
             ResetTarget::Reboot => client.reboot().await,
             ResetTarget::Bootloader => client.bootloader_jump().await,
             ResetTarget::PeripheralBootloader => client.peripheral_bootloader_jump(0).await,
+            ResetTarget::StorageWipe => client.storage_reset(StorageResetMode::Full).await,
         }
     };
     match send().await {

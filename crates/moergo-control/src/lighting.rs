@@ -360,6 +360,21 @@ pub fn run_bootloader(selector: &Selector, peripheral: bool, yes: bool) -> Resul
     Ok(())
 }
 
+pub fn run_storage_wipe(selector: &Selector, yes: bool) -> Result<()> {
+    if !yes
+        && !confirm(
+            "Erase every stored setting on the central half (keymap, layer names, combos, \
+             morses, macros, lighting, and Bluetooth pairings) and reboot it on the compiled \
+             defaults?",
+        )?
+    {
+        return Ok(());
+    }
+    crate::rynk_client::run_reset(selector, ResetTarget::StorageWipe)?;
+    println!("central half erased its stored settings and rebooted on the compiled defaults");
+    Ok(())
+}
+
 pub fn run_reboot(selector: &Selector, yes: bool) -> Result<()> {
     if !yes && !confirm("Reboot the central half? Its runtime configuration reloads from flash.")? {
         return Ok(());

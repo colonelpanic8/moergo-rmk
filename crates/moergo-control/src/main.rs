@@ -62,6 +62,11 @@ enum Command {
         #[arg(long)]
         yes: bool,
     },
+    /// Manage the central half's persisted settings.
+    Storage {
+        #[command(subcommand)]
+        command: StorageCommand,
+    },
     /// Control topology-aware RMK lighting.
     Lighting {
         #[command(subcommand)]
@@ -102,6 +107,18 @@ fn selector(cli: &Cli) -> transport::Selector {
     }
 }
 
+#[derive(Subcommand)]
+enum StorageCommand {
+    /// Erase every persisted setting (keymap, layer names, combos, morses,
+    /// macros, lighting, Bluetooth pairings) and reboot on the compiled
+    /// defaults. Apply a runtime configuration afterwards to restore it.
+    Wipe {
+        /// Skip the confirmation prompt.
+        #[arg(long)]
+        yes: bool,
+    },
+}
+
 fn run(cli: Cli) -> Result<()> {
     match &cli.command {
         Command::Battery { json } => battery::run(&selector(&cli), *json),
@@ -116,6 +133,9 @@ fn run(cli: Cli) -> Result<()> {
             lighting::run_bootloader(&selector(&cli), options.peripheral, options.yes)
         }
         Command::Reboot { yes } => lighting::run_reboot(&selector(&cli), *yes),
+        Command::Storage {
+            command: StorageCommand::Wipe { yes },
+        } => lighting::run_storage_wipe(&selector(&cli), *yes),
     }
 }
 
