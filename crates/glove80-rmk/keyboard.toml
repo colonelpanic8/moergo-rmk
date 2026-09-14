@@ -42,6 +42,12 @@ morse_max_num = 64
 combo_max_num = 32
 # The RMK default macro space (256 bytes) is sufficient for the imported short
 # macros, so it is intentionally not enlarged here.
+# Depth of the queue between the Rynk session and the storage task. A keymap
+# write is only accepted when its whole page fits here (the firmware answers
+# Busy otherwise), and a lighting persist or two may already be queued ahead
+# of it, so keep comfortably more than the host's 4-cell pages. Each slot is
+# one FlashOperationMessage of RAM.
+flash_channel_size = 16
 
 [layout]
 rows = 6

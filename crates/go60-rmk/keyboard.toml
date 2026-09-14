@@ -20,6 +20,12 @@ split_central_max_latency_powered = 0
 split_central_max_latency_battery = 1
 morse_max_num = 64
 combo_max_num = 32
+# Depth of the queue between the Rynk session and the storage task. A keymap
+# write is only accepted when its whole page fits here (the firmware answers
+# Busy otherwise), and a lighting persist or two may already be queued ahead
+# of it, so keep comfortably more than the host's 4-cell pages. Each slot is
+# one FlashOperationMessage of RAM.
+flash_channel_size = 16
 
 [layout]
 rows = 5
