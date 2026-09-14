@@ -985,18 +985,24 @@ async fn write_macro_space(client: &Client, space: &[u8], macro_chunk: u16) -> R
 
 /// Cells per keymap write before waiting for the firmware to persist them.
 ///
-/// The firmware hands every written cell to its flash task through a channel
-/// four entries deep and blocks the whole Rynk session once that channel is
-/// full (`rmk/src/host/context.rs`, `set_action`). A page longer than the
-/// channel therefore only answers after most of it has reached flash, and a
-/// flash page migration in the middle silences the device for tens of seconds
-/// while the host has no idea what it is waiting for. Four cells per page keep
-/// every write reply instant and move all of the waiting into
-/// [`persist_barrier`], where it is timed and reported.
+/// The firmware hands every written cell to its flash task through a bounded
+/// channel and only accepts a page it can queue whole, answering `Busy`
+/// otherwise (`rmk/src/host/context.rs`, `wait_for_persist_room`); a page
+/// longer than the channel falls back to streaming through it and stalls the
+/// session for the length of any flash page migration in the middle. RMK's
+/// default channel is four deep, so four cells per page keep every write
+/// reply instant on any firmware and move all of the waiting into
+/// [`persist_barrier`] and [`write_page`]'s `Busy` retries, where it is timed
+/// and reported.
 ///
 /// `MOERGO_PERSIST_BATCH` overrides the page size (still capped by the
 /// firmware's `max_bulk_keys`).
 const PERSIST_BATCH_DEFAULT: usize = 4;
+/// How long a page may keep drawing `Busy` before the apply gives up. The
+/// firmware waits about half a second for flash-queue room before answering,
+/// and a storage page migration holds the queue for tens of seconds.
+const PERSIST_BUSY_LIMIT: Duration = Duration::from_secs(300);
+const PERSIST_BUSY_RETRY_DELAY: Duration = Duration::from_millis(100);
 /// A single persist wait at or beyond this is reported as storage pressure:
 /// it means sequential-storage closed a full page and migrated the previous
 /// one's live items through MPSL flash timeslots.
@@ -1044,6 +1050,9 @@ struct PersistStats {
     barriers: usize,
     waited: Duration,
     longest: Duration,
+    /// `Busy` answers to page writes, each meaning the flash queue had no room
+    /// for the page yet.
+    busy: usize,
     /// `(layer, flat offset)` of the write behind the longest wait.
     longest_at: Option<(u8, usize)>,
     /// The firmware has no layer-metadata endpoint, so persistence could not
@@ -1068,6 +1077,12 @@ impl PersistStats {
         ));
         if let Some((layer, offset)) = self.longest_at {
             out.push_str(&format!(" (layer {layer}, offset {offset})"));
+        }
+        if self.busy > 0 {
+            out.push_str(&format!(
+                "; {} write(s) answered Busy and were retried",
+                self.busy
+            ));
         }
         out
     }
@@ -1169,6 +1184,27 @@ async fn persist_barrier(
     Ok(())
 }
 
+/// Run one write, sending it again while the firmware answers `Busy`: its
+/// flash queue has no room for the page yet, most likely because a storage
+/// page migration is holding it. Every `Busy` is counted in `stats`.
+async fn write_until_accepted(
+    stats: &mut PersistStats,
+    mut write: impl AsyncFnMut() -> Result<(), RynkHostError>,
+) -> Result<(), RynkHostError> {
+    let started = std::time::Instant::now();
+    loop {
+        match write().await {
+            Err(RynkHostError::Rejected(RynkError::Busy))
+                if started.elapsed() < PERSIST_BUSY_LIMIT =>
+            {
+                stats.busy += 1;
+                tokio::time::sleep(PERSIST_BUSY_RETRY_DELAY).await;
+            }
+            result => return result,
+        }
+    }
+}
+
 /// Write one page of cells starting at flat `offset`.
 async fn write_page(
     client: &Client,
@@ -1176,6 +1212,7 @@ async fn write_page(
     layer: u8,
     offset: usize,
     cells: &[rynk::rmk_types::action::KeyAction],
+    stats: &mut PersistStats,
 ) -> Result<()> {
     let cols = usize::from(capabilities.num_cols).max(1);
     if capabilities.bulk_transfer_supported {
@@ -1185,19 +1222,21 @@ async fn write_page(
             start_col: (offset % cols) as u8,
             actions: cells.to_vec(),
         };
-        return client
-            .set_keymap_bulk(request)
-            .await
-            .with_context(|| format!("writing layer {layer} from offset {offset}"));
+        return write_until_accepted(stats, async || {
+            client.set_keymap_bulk(request.clone()).await
+        })
+        .await
+        .with_context(|| format!("writing layer {layer} from offset {offset}"));
     }
     for (index, action) in cells.iter().copied().enumerate() {
         let flat = offset + index;
         let row = (flat / cols) as u8;
         let col = (flat % cols) as u8;
-        client
-            .set_key(layer, row, col, action)
-            .await
-            .with_context(|| format!("writing layer {layer} r{row},c{col}"))?;
+        write_until_accepted(stats, async || {
+            client.set_key(layer, row, col, action).await
+        })
+        .await
+        .with_context(|| format!("writing layer {layer} r{row},c{col}"))?;
     }
     Ok(())
 }
@@ -1240,6 +1279,7 @@ async fn write_layer(
             layer,
             page.start,
             &wanted[page.clone()],
+            stats,
         )
         .await?;
         stats.pages += 1;
@@ -1640,10 +1680,14 @@ mod tests {
             waited: Duration::from_millis(300),
             longest: Duration::from_millis(200),
             longest_at: Some((2, 4)),
+            busy: 0,
             barrier_unsupported: false,
         };
         assert!(stats.pressure_hint().is_none());
         assert!(stats.summary().contains("8 cell(s) in 2 write(s)"));
+        assert!(!stats.summary().contains("Busy"));
+        stats.busy = 3;
+        assert!(stats.summary().contains("3 write(s) answered Busy"));
         stats.longest = PERSIST_SLOW_THRESHOLD;
         assert!(stats.pressure_hint().is_some());
         stats.barrier_unsupported = true;
