@@ -1573,12 +1573,13 @@ fn require_layer_conditions_capability(
     features: LightingFeatureFlags,
 ) -> Result<()> {
     if !features.contains(LightingFeatureFlags::RUNTIME_LAYER_INDICATOR_CONDITIONS)
-        && lighting
-            .conditional_scenes
-            .as_ref()
-            .is_some_and(|cells| cells.iter().any(|cell| cell.layers.is_some()))
+        && lighting.conditional_scenes.as_ref().is_some_and(|cells| {
+            cells
+                .iter()
+                .any(|cell| cell.layers.is_some() || cell.indicators.is_some())
+        })
     {
-        bail!("configuration uses layer-set conditions but the keyboard does not advertise advanced conditional-scene support");
+        bail!("configuration uses layer-set or host lock-indicator conditions but the keyboard does not advertise advanced conditional-scene support");
     }
     Ok(())
 }

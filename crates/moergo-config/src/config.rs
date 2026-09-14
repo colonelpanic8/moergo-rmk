@@ -20,10 +20,11 @@ use rynk::rmk_types::protocol::rynk::{
     LightingBackgroundState, LightingBatteryCondition, LightingBondedSlotCondition,
     LightingChargeCondition, LightingConditionSet, LightingConditionalSceneCell,
     LightingConnectionCondition, LightingEffect, LightingEffectsCondition,
-    LightingExtendedConditionalSceneCell, LightingExtensionState, LightingLayerCondition,
-    LightingLayerPolicy, LightingLayersCondition, LightingLedId, LightingMatrixPosition,
-    LightingNodeId, LightingOutputMode, LightingRgb8, LightingSceneCell, LightingZoneId,
-    PointingConfig as WirePointingConfig, PointingDeviceConfig as WirePointingDeviceConfig,
+    LightingExtendedConditionalSceneCell, LightingExtensionState, LightingIndicatorCondition,
+    LightingLayerCondition, LightingLayerPolicy, LightingLayersCondition, LightingLedId,
+    LightingMatrixPosition, LightingNodeId, LightingOutputMode, LightingRgb8, LightingSceneCell,
+    LightingZoneId, PointingConfig as WirePointingConfig,
+    PointingDeviceConfig as WirePointingDeviceConfig,
     PointingLayerOverride as WirePointingLayerOverride, BLE_NAME_MAX_LEN, LAYER_NAME_MAX_LEN,
 };
 use rynk::{KeyId, KeyTopology, LogicalKey};
@@ -548,6 +549,7 @@ impl LayerConfig {
                                 connection: when.connection,
                                 effects: when.effects,
                                 layers: when.layers.clone(),
+                                indicators: when.indicators,
                             });
                         }
                     }
@@ -665,6 +667,8 @@ pub struct KeyConditionConfig {
     pub connection: Option<ConnectionConditionConfig>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub effects: Option<EffectsConditionConfig>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub indicators: Option<IndicatorsConditionConfig>,
 }
 
 impl LayerKeyConfig {
@@ -1226,6 +1230,47 @@ pub struct ConditionalSceneConfig {
     /// its own state.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub effects: Option<EffectsConditionConfig>,
+    /// Gate on the host's lock indicators. The host owns this state and pushes
+    /// it back over HID, so it is the only way a rule can show that Caps Lock
+    /// is on for a board whose Caps Lock lives on a held layer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub indicators: Option<IndicatorsConditionConfig>,
+}
+
+/// Gate a rule on the host's lock indicators. Every named indicator must hold;
+/// omitting one leaves it open, so a table with no named indicator would match
+/// everything and is rejected instead.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct IndicatorsConditionConfig {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub num_lock: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub caps_lock: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scroll_lock: Option<bool>,
+}
+
+impl IndicatorsConditionConfig {
+    fn is_empty(self) -> bool {
+        self.num_lock.is_none() && self.caps_lock.is_none() && self.scroll_lock.is_none()
+    }
+
+    fn to_wire(self) -> LightingIndicatorCondition {
+        LightingIndicatorCondition {
+            num_lock: self.num_lock,
+            caps_lock: self.caps_lock,
+            scroll_lock: self.scroll_lock,
+        }
+    }
+
+    fn from_wire(condition: LightingIndicatorCondition) -> Self {
+        Self {
+            num_lock: condition.num_lock,
+            caps_lock: condition.caps_lock,
+            scroll_lock: condition.scroll_lock,
+        }
+    }
 }
 
 /// Gate a rule on the extension band being on or off.
@@ -3555,6 +3600,14 @@ pub fn validate_conditional_scene(index: usize, cell: &ConditionalSceneConfig) -
             }
         }
     }
+    if cell
+        .indicators
+        .is_some_and(IndicatorsConditionConfig::is_empty)
+    {
+        bail!(
+            "conditional rule {index} has an empty indicators table; name at least one of num_lock, caps_lock, scroll_lock"
+        );
+    }
     let timings_set = cell.period_ms.is_some()
         || cell.phase_ms.is_some()
         || cell.duty.is_some()
@@ -3763,6 +3816,7 @@ pub fn conditional_scene_from_wire(
     let (color, effect, period_ms, phase_ms, duty, step_ms) = effect_from_wire(cell.effect);
     ConditionalSceneConfig {
         layers: None,
+        indicators: None,
         connection,
         effects,
         target: KeyTargetConfig::led(cell.led_id.0),
@@ -3844,6 +3898,9 @@ pub fn conditional_scene_to_wire(
     if cell.layers.is_some() {
         bail!("layer-set conditions require advanced conditional-scene endpoints");
     }
+    if cell.indicators.is_some() {
+        bail!("host lock-indicator conditions require advanced conditional-scene endpoints");
+    }
     let connection = cell.connection.map(|c| LightingConnectionCondition {
         transport: c.transport.map(|transport| match transport {
             TransportConfig::Usb => LightingActiveTransport::Usb,
@@ -3907,15 +3964,13 @@ pub fn conditional_scene_to_wire(
 pub fn conditional_scene_from_advanced_wire(
     cell: LightingAdvancedConditionalSceneCell,
 ) -> Result<ConditionalSceneConfig> {
-    if cell.indicators.is_some() {
-        bail!("host lock-indicator conditions cannot yet be represented in runtime TOML");
-    }
     let mut result = conditional_scene_from_wire(LightingExtendedConditionalSceneCell {
         cell: cell.cell,
         connection: cell.connection,
         effects: cell.effects,
     });
     result.layers = cell.layers.map(LayersConditionConfig::from_wire);
+    result.indicators = cell.indicators.map(IndicatorsConditionConfig::from_wire);
     validate_conditional_scene(0, &result)?;
     Ok(result)
 }
@@ -3926,6 +3981,7 @@ pub fn conditional_scene_to_advanced_wire(
     validate_conditional_scene(0, cell)?;
     let mut legacy = cell.clone();
     legacy.layers = None;
+    legacy.indicators = None;
     let mut result =
         LightingAdvancedConditionalSceneCell::from(conditional_scene_to_wire(&legacy)?);
     result.layers = cell
@@ -3933,6 +3989,7 @@ pub fn conditional_scene_to_advanced_wire(
         .as_ref()
         .map(LayersConditionConfig::to_wire)
         .transpose()?;
+    result.indicators = cell.indicators.map(IndicatorsConditionConfig::to_wire);
     Ok(result)
 }
 
@@ -5304,6 +5361,7 @@ Density = 6
     fn reordered_conditional_rules_are_a_difference() {
         let rule = |led: u16| ConditionalSceneConfig {
             layers: None,
+            indicators: None,
             connection: None,
             target: KeyTargetConfig::led(led),
             color: "#0040a0".into(),
@@ -5386,6 +5444,7 @@ Density = 6
             let mut snap = lighting_snapshot(None, None);
             snap.conditional_scenes = Some(vec![ConditionalSceneConfig {
                 layers: None,
+                indicators: None,
                 connection: None,
                 target: KeyTargetConfig::led(75),
                 color: "#0040a0".into(),
@@ -5510,16 +5569,37 @@ Density = 6
             *canonical
         );
         assert!(conditional_scene_to_wire(&cell).is_err());
+    }
 
-        let mut unsupported = wire;
-        unsupported.indicators = Some(
-            rynk::rmk_types::protocol::rynk::LightingIndicatorCondition {
-                num_lock: None,
-                caps_lock: Some(true),
-                scroll_lock: None,
-            },
+    #[test]
+    fn indicator_conditions_round_trip_through_the_advanced_endpoint() {
+        let cell: ConditionalSceneConfig =
+            toml::from_str("led = 1\ncolor = \"#ff2000\"\nindicators = { caps_lock = true }")
+                .unwrap();
+        let wire = conditional_scene_to_advanced_wire(&cell).unwrap();
+        let indicators = wire.indicators.unwrap();
+        assert_eq!(indicators.caps_lock, Some(true));
+        assert_eq!(indicators.num_lock, None);
+        assert_eq!(indicators.scroll_lock, None);
+        assert_eq!(conditional_scene_from_advanced_wire(wire).unwrap(), cell);
+
+        let encoded = toml::to_string(&cell).unwrap();
+        assert_eq!(
+            toml::from_str::<ConditionalSceneConfig>(&encoded).unwrap(),
+            cell
         );
-        assert!(conditional_scene_from_advanced_wire(unsupported).is_err());
+
+        // Indicator state only reaches the board over the advanced endpoint, so
+        // the legacy encoder has to refuse rather than silently drop the gate.
+        assert!(conditional_scene_to_wire(&cell).is_err());
+    }
+
+    #[test]
+    fn indicator_conditions_reject_an_empty_table() {
+        let cell: ConditionalSceneConfig =
+            toml::from_str("led = 1\ncolor = \"#ff2000\"\nindicators = {}").unwrap();
+        assert!(validate_conditional_scene(0, &cell).is_err());
+        assert!(conditional_scene_to_advanced_wire(&cell).is_err());
     }
 
     #[test]
@@ -5603,6 +5683,7 @@ Density = 6
     fn conditional_rules_round_trip_through_the_wire_and_reject_bad_batteries() {
         let mut cell = ConditionalSceneConfig {
             layers: None,
+            indicators: None,
             connection: None,
             target: KeyTargetConfig::led(75),
             color: "#0040a0".into(),
