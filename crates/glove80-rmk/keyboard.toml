@@ -963,26 +963,3 @@ zones = [1]
 node = 1
 output = 0
 physical_index = 39
-
-# Magic+A reports the selected three-state lighting policy only while the Magic
-# layer is active. Persisted runtime rules may override these compiled defaults.
-[[lighting.conditional_scene]]
-layer = { layer = 2, active = true }
-output_mode = "always_on"
-[[lighting.conditional_scene.cell]]
-target = { led = 31 }
-effect = { kind = "solid", color = [0, 128, 0] }
-
-[[lighting.conditional_scene]]
-layer = { layer = 2, active = true }
-output_mode = "always_off"
-[[lighting.conditional_scene.cell]]
-target = { led = 31 }
-effect = { kind = "solid", color = [128, 0, 0] }
-
-[[lighting.conditional_scene]]
-layer = { layer = 2, active = true }
-output_mode = "powered_only"
-[[lighting.conditional_scene.cell]]
-target = { led = 31 }
-effect = { kind = "solid", color = [0, 64, 160] }
