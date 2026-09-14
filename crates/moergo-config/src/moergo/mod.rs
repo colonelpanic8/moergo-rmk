@@ -154,7 +154,6 @@ pub fn import_moergo_layout(text: &str) -> Result<ImportedLayout> {
 
     let mut ids = std::collections::BTreeSet::new();
     let mut converted = Vec::with_capacity(layers.len());
-    let mut by_editor_layer: Vec<Option<Vec<u16>>> = vec![None; layers.len()];
     for (layer_index, layer) in layers.iter().enumerate() {
         if layer_map.get(layer_index).copied().flatten().is_none() {
             continue;
@@ -170,9 +169,6 @@ pub fn import_moergo_layout(text: &str) -> Result<ImportedLayout> {
             );
         }
         let mut matrix = vec![0u16; LAYER_SIZE];
-        // Editor order, kept alongside the matrix so combos can resolve the
-        // key positions they are declared with.
-        let mut editor_order = vec![0u16; MOERGO_TO_MATRIX.len()];
         for (editor_index, binding) in keys.iter().enumerate() {
             let offset = MOERGO_TO_MATRIX[editor_index];
             // A binding that cannot be converted leaves its cell empty and is
@@ -193,9 +189,7 @@ pub fn import_moergo_layout(text: &str) -> Result<ImportedLayout> {
                 }
             };
             matrix[offset] = code;
-            editor_order[editor_index] = code;
         }
-        by_editor_layer[layer_index] = Some(editor_order);
         let name = layer_names[layer_index].clone();
         let base_id = slug(&name, layer_index);
         let mut id = base_id.clone();
@@ -213,17 +207,14 @@ pub fn import_moergo_layout(text: &str) -> Result<ImportedLayout> {
         });
     }
 
-    let wire_combos = lowering.lower_combos(
-        &|editor_layer, position| {
-            by_editor_layer
-                .get(editor_layer)
-                .and_then(Option::as_ref)
-                .and_then(|codes| codes.get(position))
-                .map(|code| crate::rynk_keycode::from_via_keycode(*code))
-        },
-        layers.len(),
-        MOERGO_TO_MATRIX.len(),
-    );
+    let wire_combos = lowering.lower_combos(&|position| {
+        MOERGO_TO_MATRIX.get(position).map(|&offset| {
+            [
+                (offset / usize::from(crate::COLS)) as u8,
+                (offset % usize::from(crate::COLS)) as u8,
+            ]
+        })
+    });
 
     // The lowered tables go onto the managed configuration itself rather than
     // straight to the wire, so an import is an ordinary configuration: it can
@@ -240,7 +231,7 @@ pub fn import_moergo_layout(text: &str) -> Result<ImportedLayout> {
         .enumerate()
         .map(|(index, combo)| {
             crate::ComboConfig::from_wire(
-                &rynk::rmk_types::combo::ComboDefinition::Actions(combo.clone()),
+                &rynk::rmk_types::combo::ComboDefinition::Positions(combo.clone()),
                 index,
                 &[],
             )

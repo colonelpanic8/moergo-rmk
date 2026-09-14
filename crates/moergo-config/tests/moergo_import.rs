@@ -41,18 +41,6 @@ fn combo_export(extra_triggers: bool) -> String {
     .to_string()
 }
 
-fn combo_ambiguity_diagnostics(imported: &moergo_config::ImportedLayout) -> Vec<&str> {
-    imported
-        .diagnostics
-        .iter()
-        .filter(|diagnostic| {
-            diagnostic.severity == Severity::Approximated
-                && diagnostic.message.contains("extra key positions")
-        })
-        .map(|diagnostic| diagnostic.message.as_str())
-        .collect()
-}
-
 #[test]
 fn drops_the_per_finger_layers_the_home_row_mods_are_built_from() {
     let imported = import_moergo_layout(TAILORKEY).expect("import");
@@ -151,36 +139,66 @@ fn every_combo_resolves_on_each_layer_it_is_declared_for() {
             .runtime
             .combos
             .iter()
-            .all(|combo| combo.keys.len() >= 2),
-        "a combo lost its trigger keys"
+            .all(|combo| combo.positions.len() >= 2 && combo.keys.is_empty()),
+        "a combo lost its physical trigger positions"
     );
 }
 
 #[test]
-fn position_unique_combo_actions_are_not_reported_as_ambiguous() {
-    let imported = import_moergo_layout(&combo_export(false)).expect("import");
-
-    assert!(
-        combo_ambiguity_diagnostics(&imported).is_empty(),
-        "unique trigger positions were reported as ambiguous: {:?}",
-        imported.diagnostics
-    );
+fn combo_positions_survive_repeated_and_transparent_actions() {
+    for extra_triggers in [false, true] {
+        for binding in ["A", "B", "TRANSPARENT"] {
+            let mut export: serde_json::Value =
+                serde_json::from_str(&combo_export(extra_triggers)).expect("JSON");
+            export["layers"][0][1] = if binding == "TRANSPARENT" {
+                json!({ "value": "&trans" })
+            } else {
+                json!({ "value": "&kp", "params": [{ "value": binding }] })
+            };
+            let imported = import_moergo_layout(&export.to_string()).expect("import");
+            assert!(
+                imported.diagnostics.is_empty(),
+                "{:?}",
+                imported.diagnostics
+            );
+            assert_eq!(imported.runtime.combos.len(), 1);
+            let combo = &imported.runtime.combos[0];
+            assert_eq!(combo.positions, vec![[0, 0], [0, 1]]);
+            assert!(combo.keys.is_empty());
+            assert_eq!(combo.output, "KC_C");
+            assert_eq!(combo.layer, Some(0));
+            imported.runtime.snapshot().expect("valid position combo");
+        }
+    }
 }
 
 #[test]
-fn combo_actions_repeated_at_other_positions_are_reported() {
-    let imported = import_moergo_layout(&combo_export(true)).expect("import");
-    let diagnostics = combo_ambiguity_diagnostics(&imported);
-
-    assert_eq!(
-        diagnostics.len(),
-        1,
-        "diagnostics: {:?}",
-        imported.diagnostics
-    );
-    assert!(diagnostics[0].contains("copy-pair"), "{}", diagnostics[0]);
-    assert!(diagnostics[0].contains("[2, 3]"), "{}", diagnostics[0]);
-    assert_eq!(imported.runtime.combos.len(), 1, "the combo was dropped");
+fn any_layer_combo_is_a_single_unrestricted_position_combo() {
+    for layers in [None, Some(json!([-1]))] {
+        let mut export: serde_json::Value =
+            serde_json::from_str(&combo_export(false)).expect("JSON");
+        let base = export["layers"][0].clone();
+        export["layers"].as_array_mut().unwrap().push(base);
+        export["layer_names"] = json!(["Base", "Other"]);
+        if let Some(layers) = layers {
+            export["combos"][0]["layers"] = layers;
+        } else {
+            export["combos"][0]
+                .as_object_mut()
+                .unwrap()
+                .remove("layers");
+        }
+        let imported = import_moergo_layout(&export.to_string()).expect("import");
+        assert_eq!(imported.runtime.combos.len(), 1);
+        let combo = &imported.runtime.combos[0];
+        assert_eq!(combo.positions, vec![[0, 0], [0, 1]]);
+        assert!(combo.keys.is_empty());
+        assert_eq!(combo.layer, None);
+        imported
+            .runtime
+            .snapshot()
+            .expect("valid unrestricted combo");
+    }
 }
 
 #[test]

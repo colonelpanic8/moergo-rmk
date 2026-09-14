@@ -17,7 +17,7 @@
 
 use anyhow::{bail, Context, Result};
 use rynk::rmk_types::action::{Action, KeyAction};
-use rynk::rmk_types::combo::Combo;
+use rynk::rmk_types::combo::{MatrixPosition, PositionCombo};
 use rynk::rmk_types::fork::{Fork, StateBits};
 use rynk::rmk_types::modifier::ModifierCombination;
 use rynk::rmk_types::morse::{Morse, MorseMode, MorseProfile, HOLD, TAP};
@@ -592,16 +592,16 @@ impl<'a> Lowering<'a> {
 
     /// Lowers the combo table.
     ///
-    /// ZMK matches a combo on key *positions*; Rynk matches on the *actions*
-    /// those positions hold, so each combo is resolved against the layer it is
-    /// declared for. A combo listing several layers becomes one Rynk combo per
-    /// layer, because `Combo::layer` takes a single index.
+    /// ZMK matches a combo on key *positions*, and so does Rynk's
+    /// [`PositionCombo`], so the trigger carries over directly. Resolving the
+    /// positions to the actions they happen to hold would instead make the
+    /// trigger depend on the keymap: a transparent cell would lower to a
+    /// `KC_TRNS` trigger that can never match, and two cells holding the same
+    /// action would become one ambiguous chord.
     pub fn lower_combos(
         &mut self,
-        action_at: &dyn Fn(usize, usize) -> Option<KeyAction>,
-        layer_count: usize,
-        position_count: usize,
-    ) -> Vec<Combo> {
+        matrix_at: &dyn Fn(usize) -> Option<[u8; 2]>,
+    ) -> Vec<PositionCombo> {
         let mut out = Vec::new();
         // Rynk has one combo window for the whole keyboard, so the export's
         // per-combo timeouts can only be honoured when they agree.
@@ -639,69 +639,54 @@ impl<'a> Lowering<'a> {
                 continue;
             };
 
-            // No `layers` key means every layer; -1 appears in exports as the
-            // same "any layer" marker.
-            let editor_layers: Vec<usize> = match &combo.layers {
-                Some(layers) if !layers.iter().any(|layer| *layer < 0) => {
-                    layers.iter().map(|layer| *layer as usize).collect()
-                }
-                _ => (0..layer_count).collect(),
-            };
-
-            for editor_layer in editor_layers {
-                let Some(layer) = self.remap_layer(editor_layer) else {
-                    continue;
+            let mut positions = heapless::Vec::new();
+            let mut usable = true;
+            for position in &combo.key_positions {
+                let Some([row, col]) = matrix_at(*position) else {
+                    self.report(
+                        Severity::Dropped,
+                        Some(here()),
+                        format!("key position {position} is not on the keyboard"),
+                    );
+                    usable = false;
+                    break;
                 };
-                let mut actions = heapless::Vec::new();
-                let mut usable = true;
-                for position in &combo.key_positions {
-                    match action_at(editor_layer, *position) {
-                        Some(action) if actions.push(action).is_ok() => {}
-                        Some(_) => {
-                            self.report(
-                                Severity::Dropped,
-                                Some(here()),
-                                "has more keys than Rynk's combo length allows",
-                            );
-                            usable = false;
-                            break;
-                        }
-                        None => {
-                            self.report(
-                                Severity::Dropped,
-                                Some(here()),
-                                format!("key position {position} is not readable on layer {editor_layer}"),
-                            );
-                            usable = false;
-                            break;
-                        }
+                if positions.push(MatrixPosition { row, col }).is_err() {
+                    self.report(
+                        Severity::Dropped,
+                        Some(here()),
+                        "has more keys than Rynk's combo length allows",
+                    );
+                    usable = false;
+                    break;
+                }
+            }
+            if !usable {
+                continue;
+            }
+
+            // No `layers` key means every layer; -1 appears in exports as the
+            // same "any layer" marker. One physical chord matches on every
+            // layer, so that is a single unrestricted combo rather than a copy
+            // per layer.
+            match &combo.layers {
+                Some(layers) if !layers.iter().any(|layer| *layer < 0) => {
+                    for editor_layer in layers.iter().map(|layer| *layer as usize) {
+                        let Some(layer) = self.remap_layer(editor_layer) else {
+                            continue;
+                        };
+                        out.push(PositionCombo {
+                            positions: positions.clone(),
+                            output,
+                            layer: Some(layer),
+                        });
                     }
                 }
-                if usable {
-                    if let Some(extra_positions) = ambiguous_combo_positions(
-                        &actions,
-                        &combo.key_positions,
-                        editor_layer,
-                        position_count,
-                        action_at,
-                    ) {
-                        self.report(
-                            Severity::Approximated,
-                            Some(here()),
-                            format!(
-                                "combo '{}' on editor layer {editor_layer} has the same trigger \
-                                 actions at extra key positions {extra_positions:?}; Rynk may \
-                                 fire it from that chord too",
-                                combo.name
-                            ),
-                        );
-                    }
-                    out.push(Combo {
-                        actions,
-                        output,
-                        layer: Some(layer),
-                    });
-                }
+                _ => out.push(PositionCombo {
+                    positions,
+                    output,
+                    layer: None,
+                }),
             }
         }
         out
@@ -810,57 +795,6 @@ impl<'a> Lowering<'a> {
             }
         }
     }
-}
-
-fn ambiguous_combo_positions(
-    trigger_actions: &[KeyAction],
-    declared_positions: &[usize],
-    editor_layer: usize,
-    position_count: usize,
-    action_at: &dyn Fn(usize, usize) -> Option<KeyAction>,
-) -> Option<Vec<usize>> {
-    let mut needed: Vec<(KeyAction, usize)> = Vec::new();
-    for action in trigger_actions
-        .iter()
-        .filter(|action| !matches!(action, KeyAction::No | KeyAction::Transparent))
-    {
-        match needed
-            .iter_mut()
-            .find(|(candidate, _)| *candidate == *action)
-        {
-            Some((_, count)) => *count += 1,
-            None => needed.push((*action, 1)),
-        }
-    }
-    if needed.is_empty() {
-        return None;
-    }
-
-    // A repeated action alone is not enough: another physical chord must be
-    // able to supply the complete trigger multiset. Requiring every member of
-    // this witness to be outside the declared positions also means a two-key
-    // combo with one layer-unique trigger cannot be reported as ambiguous.
-    let mut extra_positions = Vec::new();
-    for position in (0..position_count).filter(|position| !declared_positions.contains(position)) {
-        let Some(action) = action_at(editor_layer, position) else {
-            continue;
-        };
-        if matches!(action, KeyAction::No | KeyAction::Transparent) {
-            continue;
-        }
-        if let Some((_, count)) = needed
-            .iter_mut()
-            .find(|(candidate, count)| *count > 0 && *candidate == action)
-        {
-            *count -= 1;
-            extra_positions.push(position);
-        }
-    }
-
-    needed
-        .iter()
-        .all(|(_, count)| *count == 0)
-        .then_some(extra_positions)
 }
 
 /// An editor parameter is either a bare value or a `{ "value": ... }` wrapper.
