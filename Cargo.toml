@@ -12,6 +12,7 @@ default-members = ["crates/moergo-control"]
 exclude = [
   # Agent/task worktrees checked out under the repo root stay separate roots.
   ".worktrees",
+  "dependencies/rmk/.worktrees",
   "crates/glove80-rmk",
   "crates/go60-rmk",
   "crates/split-lighting-tests",
