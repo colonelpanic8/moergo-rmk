@@ -159,8 +159,12 @@ subs = 3
 
 [storage]
 enabled = true
-start_addr = 0xec000
-num_sectors = 8
+# Same flash map and the same sizing problem as the Glove80 (see its
+# keyboard.toml): 16 compiled layers are materialised into the store on every
+# rebuild, and eight sectors left it over 90 % full. Use 0xdc000-0xf4000; the
+# application is capped at 0xdc000 by memory.x, so this cannot collide with it.
+start_addr = 0xdc000
+num_sectors = 24
 
 [ble]
 enabled = true

@@ -218,10 +218,25 @@ subs = 4
 
 [storage]
 enabled = true
-# ZMK storage partition: 0xec000-0xf4000 (eight 4 KiB sectors, ends at the
-# bootloader). The runtime-config partition at 0xdc000 stays reserved.
-start_addr = 0xec000
-num_sectors = 8
+# Settings partition: 0xdc000-0xf4000, twenty-four 4 KiB sectors ending at the
+# bootloader. This spans ZMK's old runtime-config partition (0xdc000-0xec000)
+# and its settings partition (0xec000-0xf4000); nothing in this firmware reads
+# the former, and memory.x caps the application at 0xdc000, so the two cannot
+# collide.
+#
+# Sizing: RMK's boot path stores one sequential-storage item per cell of every
+# compiled layer whenever the build hash changes (rmk/src/storage/mod.rs,
+# `initialize_storage_with_config`), so 16 x 6 x 14 = 1344 items of 16-24 B
+# land before any user data. sequential-storage keeps one sector erased as its
+# buffer, so eight sectors offered ~28 KiB for ~22 KiB of compiled keymap plus
+# lighting scenes, morses, names, and bonds: over 90 % full, which made every
+# few dozen writes close a page and migrate the previous one through
+# radio-scheduled flash timeslots, stalling `config apply` for tens of seconds
+# at a time on its way to a silent "Storage is full". Twenty-four sectors keep
+# the store around 30 % full. Changing this range makes the next boot fail its
+# storage check and erase the whole range, which every rebuild does anyway.
+start_addr = 0xdc000
+num_sectors = 24
 
 [ble]
 enabled = true
