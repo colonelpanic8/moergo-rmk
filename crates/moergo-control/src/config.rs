@@ -983,48 +983,268 @@ async fn write_macro_space(client: &Client, space: &[u8], macro_chunk: u16) -> R
     Ok(())
 }
 
-/// Write one layer, in as few round trips as the device allows.
+/// Cells per keymap write before waiting for the firmware to persist them.
 ///
-/// Per-key writes cost one round trip each, so a full layout ran to hundreds of
-/// them and took minutes — long enough that an interruption left the keyboard
-/// half-written, which is not a hypothetical. Bulk pages cut that to a handful.
+/// The firmware hands every written cell to its flash task through a channel
+/// four entries deep and blocks the whole Rynk session once that channel is
+/// full (`rmk/src/host/context.rs`, `set_action`). A page longer than the
+/// channel therefore only answers after most of it has reached flash, and a
+/// flash page migration in the middle silences the device for tens of seconds
+/// while the host has no idea what it is waiting for. Four cells per page keep
+/// every write reply instant and move all of the waiting into
+/// [`persist_barrier`], where it is timed and reported.
 ///
-/// The whole layer goes out rather than only the cells that differ: a page is
-/// contiguous, so sending scattered cells individually is what we are trying to
-/// avoid. Firmware that does not implement bulk transfer falls back to per-key.
+/// `MOERGO_PERSIST_BATCH` overrides the page size (still capped by the
+/// firmware's `max_bulk_keys`).
+const PERSIST_BATCH_DEFAULT: usize = 4;
+/// A single persist wait at or beyond this is reported as storage pressure:
+/// it means sequential-storage closed a full page and migrated the previous
+/// one's live items through MPSL flash timeslots.
+const PERSIST_SLOW_THRESHOLD: Duration = Duration::from_secs(2);
+
+/// How keymap cells are written and confirmed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct WritePolicy {
+    /// Cells per write request.
+    batch: usize,
+    /// Rewrite whole layers (the pre-diff behaviour) instead of only the
+    /// cells that differ from the keyboard. `MOERGO_WRITE_WHOLE_LAYERS=1`.
+    whole_layers: bool,
+}
+
+impl WritePolicy {
+    fn from_env(capabilities: &rynk::rmk_types::protocol::rynk::DeviceCapabilities) -> Self {
+        let bulk_cap = if capabilities.bulk_transfer_supported {
+            usize::from(capabilities.max_bulk_keys).max(1)
+        } else {
+            usize::MAX
+        };
+        let batch = std::env::var("MOERGO_PERSIST_BATCH")
+            .ok()
+            .and_then(|value| value.trim().parse::<usize>().ok())
+            .filter(|value| *value >= 1)
+            .unwrap_or(PERSIST_BATCH_DEFAULT)
+            .min(bulk_cap);
+        let whole_layers = std::env::var("MOERGO_WRITE_WHOLE_LAYERS")
+            .map(|value| matches!(value.trim(), "1" | "true" | "yes"))
+            .unwrap_or(false);
+        Self {
+            batch,
+            whole_layers,
+        }
+    }
+}
+
+/// What a `config apply` had to push to flash, and how long flash made it wait.
+#[derive(Debug, Default)]
+struct PersistStats {
+    cells: usize,
+    pages: usize,
+    layers: usize,
+    barriers: usize,
+    waited: Duration,
+    longest: Duration,
+    /// `(layer, flat offset)` of the write behind the longest wait.
+    longest_at: Option<(u8, usize)>,
+    /// The firmware has no layer-metadata endpoint, so persistence could not
+    /// be confirmed; writes are still queued in order.
+    barrier_unsupported: bool,
+}
+
+impl PersistStats {
+    fn summary(&self) -> String {
+        let mut out = format!(
+            "persisted {} cell(s) in {} write(s) across {} layer(s)",
+            self.cells, self.pages, self.layers
+        );
+        if self.barrier_unsupported {
+            out.push_str("; firmware cannot confirm persistence (no layer metadata endpoint)");
+            return out;
+        }
+        out.push_str(&format!(
+            "; waited {:.1}s for flash in total, longest {:.1}s",
+            self.waited.as_secs_f64(),
+            self.longest.as_secs_f64()
+        ));
+        if let Some((layer, offset)) = self.longest_at {
+            out.push_str(&format!(" (layer {layer}, offset {offset})"));
+        }
+        out
+    }
+
+    fn pressure_hint(&self) -> Option<String> {
+        (self.longest >= PERSIST_SLOW_THRESHOLD).then(|| {
+            format!(
+                "flash waits of {:.0}s+ mean sequential-storage is migrating nearly full pages: \
+                 the settings partition is close to capacity. Every rebuild re-stores all compiled \
+                 layers, so grow `[storage] num_sectors` in the board's keyboard.toml before the \
+                 store fills and writes start failing silently.",
+                PERSIST_SLOW_THRESHOLD.as_secs_f64()
+            )
+        })
+    }
+}
+
+/// Contiguous runs of flat cell indices where `wanted` differs from `present`.
+///
+/// A keyboard whose layer could not be read (`present` empty or the wrong
+/// length) gets the whole layer, since nothing can be assumed about it.
+fn changed_runs(
+    wanted: &[rynk::rmk_types::action::KeyAction],
+    present: &[rynk::rmk_types::action::KeyAction],
+) -> Vec<std::ops::Range<usize>> {
+    if wanted.is_empty() {
+        return Vec::new();
+    }
+    if present.len() != wanted.len() {
+        return std::iter::once(0..wanted.len()).collect();
+    }
+    let mut runs: Vec<std::ops::Range<usize>> = Vec::new();
+    for (index, (want, have)) in wanted.iter().zip(present).enumerate() {
+        if want == have {
+            continue;
+        }
+        match runs.last_mut() {
+            Some(run) if run.end == index => run.end = index + 1,
+            _ => runs.push(index..index + 1),
+        }
+    }
+    runs
+}
+
+/// Split runs into pages of at most `batch` cells.
+fn pages_of(runs: &[std::ops::Range<usize>], batch: usize) -> Vec<std::ops::Range<usize>> {
+    let batch = batch.max(1);
+    runs.iter()
+        .flat_map(|run| {
+            run.clone()
+                .step_by(batch)
+                .map(move |start| start..(start + batch).min(run.end))
+        })
+        .collect()
+}
+
+/// Wait until every cell queued so far has reached flash.
+///
+/// `GetLayerMetadata` is served through the same FIFO channel as the keymap
+/// writes (`rmk/src/storage/mod.rs`, `read_layer_metadata`), so its reply
+/// arrives only after the flash task has finished everything queued before
+/// it. That makes it the one request whose latency measures persistence.
+async fn persist_barrier(
+    client: &Client,
+    layer: u8,
+    offset: usize,
+    stats: &mut PersistStats,
+) -> Result<()> {
+    if stats.barrier_unsupported {
+        return Ok(());
+    }
+    let started = std::time::Instant::now();
+    match client.get_layer_metadata(layer).await {
+        Ok(_) => {}
+        Err(error) if endpoint_unsupported(&error) => {
+            stats.barrier_unsupported = true;
+            return Ok(());
+        }
+        Err(error) => {
+            return Err(error).with_context(|| {
+                format!("waiting for layer {layer} cells from offset {offset} to reach flash")
+            })
+        }
+    }
+    let waited = started.elapsed();
+    stats.barriers += 1;
+    stats.waited += waited;
+    if waited > stats.longest {
+        stats.longest = waited;
+        stats.longest_at = Some((layer, offset));
+    }
+    if waited >= PERSIST_SLOW_THRESHOLD {
+        eprintln!(
+            "  layer {layer}: flash took {:.1}s to absorb the write at offset {offset} \
+             (page migration in the settings partition)",
+            waited.as_secs_f64()
+        );
+    }
+    Ok(())
+}
+
+/// Write one page of cells starting at flat `offset`.
+async fn write_page(
+    client: &Client,
+    capabilities: &rynk::rmk_types::protocol::rynk::DeviceCapabilities,
+    layer: u8,
+    offset: usize,
+    cells: &[rynk::rmk_types::action::KeyAction],
+) -> Result<()> {
+    let cols = usize::from(capabilities.num_cols).max(1);
+    if capabilities.bulk_transfer_supported {
+        let request = SetKeymapBulkRequest {
+            layer,
+            start_row: (offset / cols) as u8,
+            start_col: (offset % cols) as u8,
+            actions: cells.to_vec(),
+        };
+        return client
+            .set_keymap_bulk(request)
+            .await
+            .with_context(|| format!("writing layer {layer} from offset {offset}"));
+    }
+    for (index, action) in cells.iter().copied().enumerate() {
+        let flat = offset + index;
+        let row = (flat / cols) as u8;
+        let col = (flat % cols) as u8;
+        client
+            .set_key(layer, row, col, action)
+            .await
+            .with_context(|| format!("writing layer {layer} r{row},c{col}"))?;
+    }
+    Ok(())
+}
+
+/// Write the cells of one layer that differ from what the keyboard holds, in
+/// small pages, waiting for flash after each page.
+///
+/// Only changed cells go out: every written cell becomes a new item in the
+/// firmware's sequential-storage map whether or not its value changed, and
+/// that map is what fills up and forces slow page migrations. Rewriting a
+/// whole 84-cell layer for one edit is pure churn.
+///
+/// Pages are short (see [`PERSIST_BATCH_DEFAULT`]) so a write reply never
+/// waits on flash; the wait is taken, timed, and reported by
+/// [`persist_barrier`] instead. Firmware without bulk transfer falls back to
+/// per-key writes with the same pacing.
 async fn write_layer(
     client: &Client,
     capabilities: &rynk::rmk_types::protocol::rynk::DeviceCapabilities,
     layer: u8,
     wanted: &[rynk::rmk_types::action::KeyAction],
+    present: &[rynk::rmk_types::action::KeyAction],
+    policy: WritePolicy,
+    stats: &mut PersistStats,
 ) -> Result<()> {
-    let actions = wanted;
-
-    if capabilities.bulk_transfer_supported {
-        let per_page = usize::from(capabilities.max_bulk_keys).max(1);
-        for (page, chunk) in actions.chunks(per_page).enumerate() {
-            let offset = page * per_page;
-            let request = SetKeymapBulkRequest {
-                layer,
-                start_row: (offset / usize::from(capabilities.num_cols)) as u8,
-                start_col: (offset % usize::from(capabilities.num_cols)) as u8,
-                actions: chunk.to_vec(),
-            };
-            client
-                .set_keymap_bulk(request)
-                .await
-                .with_context(|| format!("writing layer {layer} from offset {offset}"))?;
-        }
+    let runs = if policy.whole_layers {
+        std::iter::once(0..wanted.len()).collect()
+    } else {
+        changed_runs(wanted, present)
+    };
+    let pages = pages_of(&runs, policy.batch);
+    if pages.is_empty() {
         return Ok(());
     }
-
-    for (offset, action) in actions.iter().copied().enumerate() {
-        let row = (offset / usize::from(capabilities.num_cols)) as u8;
-        let col = (offset % usize::from(capabilities.num_cols)) as u8;
-        client
-            .set_key(layer, row, col, action)
-            .await
-            .with_context(|| format!("writing layer {layer} r{row},c{col}"))?;
+    stats.layers += 1;
+    for page in pages {
+        write_page(
+            client,
+            capabilities,
+            layer,
+            page.start,
+            &wanted[page.clone()],
+        )
+        .await?;
+        stats.pages += 1;
+        stats.cells += page.len();
+        persist_barrier(client, layer, page.start, stats).await?;
     }
     Ok(())
 }
@@ -1081,6 +1301,8 @@ async fn apply_snapshot(client: &Client, desired: &Snapshot, before: &Snapshot) 
     // remain untouched rather than being destructively cleared, which is why this
     // writes layer by layer rather than handing the whole keymap to
     // `write_all_keymap`.
+    let policy = WritePolicy::from_env(&capabilities);
+    let mut persist = PersistStats::default();
     for layer in 0..u8::try_from(desired.layers.len()).context("too many configured layers")? {
         let wanted = &desired.layers[usize::from(layer)];
         let present = before
@@ -1090,7 +1312,22 @@ async fn apply_snapshot(client: &Client, desired: &Snapshot, before: &Snapshot) 
         if wanted == present {
             continue;
         }
-        write_layer(client, &capabilities, layer, wanted).await?;
+        write_layer(
+            client,
+            &capabilities,
+            layer,
+            wanted,
+            present,
+            policy,
+            &mut persist,
+        )
+        .await?;
+    }
+    if persist.cells > 0 {
+        eprintln!("{}", persist.summary());
+        if let Some(hint) = persist.pressure_hint() {
+            eprintln!("note: {hint}");
+        }
     }
     if desired.default_layer != before.default_layer {
         client.set_default_layer(desired.default_layer).await?;
@@ -1353,6 +1590,65 @@ mod tests {
     use rynk::rmk_types::protocol::rynk::{
         PointingDeviceConfig, POINTING_MODE_CURSOR_REMAP, POINTING_MODE_KEYPAD,
     };
+
+    fn action(code: u8) -> rynk::rmk_types::action::KeyAction {
+        use rynk::rmk_types::action::{Action, KeyAction};
+        use rynk::rmk_types::keycode::KeyCode;
+        KeyAction::Single(Action::Key(KeyCode::Hid(code.into())))
+    }
+
+    #[test]
+    fn changed_runs_groups_adjacent_differences() {
+        let present = vec![
+            action(4),
+            action(5),
+            action(6),
+            action(7),
+            action(8),
+            action(9),
+        ];
+        let mut wanted = present.clone();
+        wanted[1] = action(20);
+        wanted[2] = action(21);
+        wanted[5] = action(22);
+        assert_eq!(changed_runs(&wanted, &present), vec![1..3, 5..6]);
+        assert!(changed_runs(&present, &present).is_empty());
+    }
+
+    #[test]
+    fn changed_runs_rewrites_unreadable_layers() {
+        let wanted = vec![action(4), action(5), action(6)];
+        assert_eq!(changed_runs(&wanted, &[]), vec![0..3]);
+        assert_eq!(changed_runs(&wanted, &wanted[..2]), vec![0..3]);
+        assert!(changed_runs(&[], &[]).is_empty());
+    }
+
+    #[test]
+    fn pages_never_exceed_the_batch_or_cross_a_run() {
+        let pages = pages_of(&[0..10, 12..13], 4);
+        assert_eq!(pages, vec![0..4, 4..8, 8..10, 12..13]);
+        assert_eq!(pages_of(&[0..3], 0), vec![0..1, 1..2, 2..3]);
+    }
+
+    #[test]
+    fn persist_stats_report_pressure_only_for_slow_waits() {
+        let mut stats = PersistStats {
+            cells: 8,
+            pages: 2,
+            layers: 1,
+            barriers: 2,
+            waited: Duration::from_millis(300),
+            longest: Duration::from_millis(200),
+            longest_at: Some((2, 4)),
+            barrier_unsupported: false,
+        };
+        assert!(stats.pressure_hint().is_none());
+        assert!(stats.summary().contains("8 cell(s) in 2 write(s)"));
+        stats.longest = PERSIST_SLOW_THRESHOLD;
+        assert!(stats.pressure_hint().is_some());
+        stats.barrier_unsupported = true;
+        assert!(stats.summary().contains("cannot confirm persistence"));
+    }
 
     #[test]
     fn layer_conditions_require_advanced_firmware_before_apply() {

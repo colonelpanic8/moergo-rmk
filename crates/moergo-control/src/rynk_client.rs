@@ -1058,6 +1058,78 @@ async fn connect_device<D: RynkDevice>(
         .with_context(|| format!("could not establish a Rynk session with {label}"))
 }
 
+/// Time the firmware's flash queue: a layer-metadata read answers only after
+/// every previously queued write has been persisted, so its latency is the
+/// queue's drain time, and a write followed by that read is one item's
+/// persist time. Prints per-round numbers and a summary.
+async fn persist_probe(client: &Client, rounds: u32, writes: bool) -> Result<()> {
+    let rounds = rounds.max(1);
+    let baseline = client.get_layer_metadata(0).await?;
+    let mut drain = Vec::with_capacity(rounds as usize);
+    let mut persist = Vec::with_capacity(rounds as usize);
+    for round in 1..=rounds {
+        let started = std::time::Instant::now();
+        client.get_layer_metadata(0).await?;
+        let drained = started.elapsed();
+        drain.push(drained);
+        if writes {
+            let started = std::time::Instant::now();
+            client
+                .set_layer_metadata(0, baseline.clone())
+                .await
+                .context("persist probe write rejected")?;
+            client.get_layer_metadata(0).await?;
+            let persisted = started.elapsed();
+            persist.push(persisted);
+            println!(
+                "round {round}: queue drain {:.3}s, one-item persist {:.3}s",
+                drained.as_secs_f64(),
+                persisted.as_secs_f64()
+            );
+        } else {
+            println!("round {round}: queue drain {:.3}s", drained.as_secs_f64());
+        }
+    }
+    let report = |label: &str, samples: &[Duration]| {
+        let min = samples.iter().min().copied().unwrap_or_default();
+        let max = samples.iter().max().copied().unwrap_or_default();
+        let mean = samples.iter().sum::<Duration>() / samples.len().max(1) as u32;
+        println!(
+            "{label}: min {:.3}s, mean {:.3}s, max {:.3}s over {} round(s)",
+            min.as_secs_f64(),
+            mean.as_secs_f64(),
+            max.as_secs_f64(),
+            samples.len()
+        );
+        max
+    };
+    let worst_drain = report("queue drain", &drain);
+    let worst_persist = if writes {
+        report("one-item persist", &persist)
+    } else {
+        Duration::ZERO
+    };
+    if worst_drain > Duration::from_secs(1) {
+        println!(
+            "note: the flash queue took over a second to drain with nothing of ours queued; \
+             another writer (lighting state, bonds) or a page migration was in progress"
+        );
+    }
+    if worst_persist > Duration::from_secs(2) {
+        println!(
+            "note: a single item took over two seconds to persist, which is a sequential-storage \
+             page migration; the settings partition is close to full. Grow `[storage] num_sectors` \
+             in the board's keyboard.toml."
+        );
+    } else if writes && worst_persist > Duration::from_millis(200) {
+        println!(
+            "note: single-item persists above 200ms mean flash timeslots are contending with the \
+             radio (split link or host advertising); expect config applies to be slow but sound"
+        );
+    }
+    Ok(())
+}
+
 async fn operate(client: &Client, command: &KeymapCommand) -> Result<()> {
     let capabilities = client.get_capabilities().await?;
     keymap::check_grid(
@@ -1071,6 +1143,7 @@ async fn operate(client: &Client, command: &KeymapCommand) -> Result<()> {
         KeymapCommand::Set { .. }
             | KeymapCommand::Default { layer: Some(_) }
             | KeymapCommand::Name { name: Some(_), .. }
+            | KeymapCommand::PersistProbe { writes: true, .. }
     ) {
         require_maintenance_mode(client).await?;
     }
@@ -1216,6 +1289,9 @@ async fn operate(client: &Client, command: &KeymapCommand) -> Result<()> {
                 });
             }
             println!("{}", keymap::render_layer_names(&slots));
+        }
+        KeymapCommand::PersistProbe { rounds, writes } => {
+            persist_probe(client, *rounds, *writes).await?;
         }
         KeymapCommand::Monitor { seconds } => {
             require_maintenance_mode(client).await?;

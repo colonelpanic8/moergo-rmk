@@ -10,6 +10,8 @@ use std::path::{Path, PathBuf};
 use rynk::io::{ErrorType, Read, Write};
 use rynk::rmk_types::protocol::rynk::RYNK_HID_REPORT_SIZE;
 use rynk::{RynkDevice, RynkHostError};
+use std::sync::OnceLock;
+use std::time::Duration;
 use tokio::io::unix::AsyncFd;
 
 use crate::transport::ids::{USB_PID, USB_VID};
@@ -118,6 +120,27 @@ impl RynkDevice for HidDevice {
     }
 }
 
+/// Longest silence tolerated while waiting for a report.
+///
+/// This is a dead-link detector, not a per-request budget, so it has to be
+/// long: a keymap write that lands on a full flash page makes the firmware
+/// migrate the page through radio-scheduled flash timeslots, during which it
+/// answers nothing for tens of seconds and reads no requests either. A short
+/// value here turns that pause into a spurious `TimedOut`, and a retry on a
+/// fresh session then fails on the kernel's own interrupt-OUT timeout because
+/// the device still is not reading. `MOERGO_RYNK_READ_TIMEOUT_SECS` overrides
+/// the default of 300.
+fn read_timeout() -> Duration {
+    static TIMEOUT: OnceLock<Duration> = OnceLock::new();
+    *TIMEOUT.get_or_init(|| {
+        std::env::var("MOERGO_RYNK_READ_TIMEOUT_SECS")
+            .ok()
+            .and_then(|value| value.trim().parse::<u64>().ok())
+            .filter(|secs| *secs > 0)
+            .map_or(Duration::from_secs(300), Duration::from_secs)
+    })
+}
+
 pub struct HidReader {
     file: AsyncFd<File>,
     report: [u8; RYNK_HID_REPORT_SIZE],
@@ -143,7 +166,20 @@ impl Read for HidReader {
             }
 
             let n = loop {
-                let mut ready = self.file.readable().await?;
+                let mut ready =
+                    match tokio::time::timeout(read_timeout(), self.file.readable()).await {
+                        Ok(ready) => ready?,
+                        Err(_) => {
+                            return Err(std::io::Error::new(
+                                std::io::ErrorKind::TimedOut,
+                                format!(
+                                    "no Rynk report from the keyboard within {}s \
+                                 (MOERGO_RYNK_READ_TIMEOUT_SECS)",
+                                    read_timeout().as_secs()
+                                ),
+                            ))
+                        }
+                    };
                 match ready.try_io(|inner| {
                     let mut file = inner.get_ref();
                     file.read(&mut self.report)

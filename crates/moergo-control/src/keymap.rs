@@ -56,6 +56,22 @@ pub enum KeymapCommand {
     },
     /// Search the keycode name table without connecting to a keyboard.
     Find { fragment: String },
+    /// Measure how long the keyboard takes to persist settings to flash.
+    ///
+    /// Each round waits for the firmware's flash queue to drain (a layer
+    /// metadata read is served behind every queued write) and, with
+    /// `--writes`, also times one real one-item write. Slow or erratic
+    /// results mean the settings partition is nearly full and page
+    /// migrations are stalling every write.
+    PersistProbe {
+        /// Rounds to measure.
+        #[arg(long, default_value_t = 8)]
+        rounds: u32,
+        /// Also time a real write per round (rewrites layer 0's name with its
+        /// current value; consumes one flash entry per round).
+        #[arg(long)]
+        writes: bool,
+    },
 }
 
 pub fn check_grid(rows: u8, cols: u8, layers: u8) -> Result<()> {
