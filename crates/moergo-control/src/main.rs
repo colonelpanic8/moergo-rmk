@@ -55,6 +55,13 @@ enum Command {
         #[command(flatten)]
         options: lighting::BootloaderArgs,
     },
+    /// Reboot the central half into the application through Rynk, reloading
+    /// its runtime configuration from flash.
+    Reboot {
+        /// Skip the confirmation prompt.
+        #[arg(long)]
+        yes: bool,
+    },
     /// Control topology-aware RMK lighting.
     Lighting {
         #[command(subcommand)]
@@ -108,6 +115,7 @@ fn run(cli: Cli) -> Result<()> {
         Command::Bootloader { options } => {
             lighting::run_bootloader(&selector(&cli), options.peripheral, options.yes)
         }
+        Command::Reboot { yes } => lighting::run_reboot(&selector(&cli), *yes),
     }
 }
 

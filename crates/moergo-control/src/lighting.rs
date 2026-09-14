@@ -7,6 +7,7 @@ use anyhow::{bail, Context, Result};
 use clap::{Args, Subcommand, ValueEnum};
 use rynk::rmk_types::protocol::rynk::{LightingReplicaStatus, LightingReplicationHealth};
 
+use crate::rynk_client::ResetTarget;
 use crate::transport::Selector;
 
 #[derive(Subcommand)]
@@ -346,22 +347,42 @@ pub fn run(selector: &Selector, command: &LightingCommand) -> Result<()> {
 
 pub fn run_bootloader(selector: &Selector, peripheral: bool, yes: bool) -> Result<()> {
     let half = if peripheral { "peripheral" } else { "central" };
-    if !yes {
-        print!("Reboot the {half} half into its UF2 bootloader? [y/N] ");
-        std::io::stdout().flush().ok();
-        let mut answer = String::new();
-        std::io::stdin()
-            .lock()
-            .read_line(&mut answer)
-            .context("could not read confirmation")?;
-        if !matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes") {
-            println!("aborted");
-            return Ok(());
-        }
+    if !yes && !confirm(&format!("Reboot the {half} half into its UF2 bootloader?"))? {
+        return Ok(());
     }
-    crate::rynk_client::run_bootloader(selector, peripheral)?;
+    let target = if peripheral {
+        ResetTarget::PeripheralBootloader
+    } else {
+        ResetTarget::Bootloader
+    };
+    crate::rynk_client::run_reset(selector, target)?;
     println!("{half} half accepted the Rynk bootloader request");
     Ok(())
+}
+
+pub fn run_reboot(selector: &Selector, yes: bool) -> Result<()> {
+    if !yes && !confirm("Reboot the central half? Its runtime configuration reloads from flash.")? {
+        return Ok(());
+    }
+    crate::rynk_client::run_reset(selector, ResetTarget::Reboot)?;
+    println!("central half accepted the Rynk reboot request");
+    Ok(())
+}
+
+fn confirm(question: &str) -> Result<bool> {
+    print!("{question} [y/N] ");
+    std::io::stdout().flush().ok();
+    let mut answer = String::new();
+    std::io::stdin()
+        .lock()
+        .read_line(&mut answer)
+        .context("could not read confirmation")?;
+    if matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes") {
+        Ok(true)
+    } else {
+        println!("aborted");
+        Ok(false)
+    }
 }
 
 #[cfg(test)]

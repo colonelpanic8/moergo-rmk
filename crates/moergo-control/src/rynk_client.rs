@@ -282,13 +282,24 @@ async fn operate_connection(client: &Client, command: &ConnectionCommand) -> Res
     Ok(())
 }
 
-pub fn run_bootloader(selector: &Selector, peripheral: bool) -> Result<()> {
+/// Which reset a `run_reset` call asks the keyboard for.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum ResetTarget {
+    /// Reset the central back into the application.
+    Reboot,
+    /// Reset the central into its UF2 bootloader.
+    Bootloader,
+    /// Route a bootloader jump to the peripheral; the central stays online.
+    PeripheralBootloader,
+}
+
+pub fn run_reset(selector: &Selector, target: ResetTarget) -> Result<()> {
     let runtime =
         tokio::runtime::Runtime::new().context("could not create the Rynk async runtime")?;
     runtime.block_on(async {
         match select_device(selector).await? {
-            Device::Hid(device) => run_bootloader_device(device, peripheral).await,
-            Device::Ble(device) => run_bootloader_device(device, peripheral).await,
+            Device::Hid(device) => run_reset_device(device, target).await,
+            Device::Ble(device) => run_reset_device(device, target).await,
         }
     })
 }
@@ -316,26 +327,25 @@ async fn run_config_device<D: RynkDevice>(device: D, command: &ConfigCommand) ->
     }
 }
 
-async fn run_bootloader_device<D: RynkDevice>(device: D, peripheral: bool) -> Result<()> {
+async fn run_reset_device<D: RynkDevice>(device: D, target: ResetTarget) -> Result<()> {
     let label = device.label();
     let (client, mut driver) = connect_device(device, &label).await?;
     let queued = std::cell::Cell::new(false);
     let request = async {
-        if peripheral {
+        if target == ResetTarget::PeripheralBootloader {
             jump_peripheral(&client).await
         } else {
-            request_bootloader_jump(&client, false).await?;
+            request_reset(&client, target).await?;
             queued.set(true);
             std::future::pending::<Result<()>>().await
         }
     };
-    let bootloader_timeout = if peripheral {
+    let timeout = if target == ResetTarget::PeripheralBootloader {
         RYNK_PERIPHERAL_BOOTLOADER_TIMEOUT
     } else {
         RYNK_BOOTLOADER_TIMEOUT
     };
-    let outcome =
-        tokio::time::timeout(bootloader_timeout, select(driver.run(&client), request)).await;
+    let outcome = tokio::time::timeout(timeout, select(driver.run(&client), request)).await;
     match outcome {
         // A disconnect after the frame was queued is the device reset we need
         // to observe. Merely filling the host queue is not success.
@@ -343,28 +353,26 @@ async fn run_bootloader_device<D: RynkDevice>(device: D, peripheral: bool) -> Re
         Ok(Either::First(error)) => Err(anyhow!("Rynk connection to {label} ended: {error}")),
         Ok(Either::Second(result)) => result,
         Err(_) if queued.get() => bail!(
-            "the bootloader request was sent, but the keyboard did not disconnect within {} seconds",
-            bootloader_timeout.as_secs()
+            "the reset request was sent, but the keyboard did not disconnect within {} seconds",
+            timeout.as_secs()
         ),
-        Err(_) => bail!("the bootloader request timed out"),
+        Err(_) => bail!("the reset request timed out"),
     }
 }
 
-async fn request_bootloader_jump(client: &Client, peripheral: bool) -> Result<()> {
-    let result = if peripheral {
-        client.peripheral_bootloader_jump(0).await
-    } else {
-        client.bootloader_jump().await
+async fn request_reset(client: &Client, target: ResetTarget) -> Result<()> {
+    let send = || async {
+        match target {
+            ResetTarget::Reboot => client.reboot().await,
+            ResetTarget::Bootloader => client.bootloader_jump().await,
+            ResetTarget::PeripheralBootloader => client.peripheral_bootloader_jump(0).await,
+        }
     };
-    match result {
+    match send().await {
         Ok(()) => Ok(()),
         Err(RynkHostError::Rejected(RynkError::Locked)) => {
             require_maintenance_mode(client).await?;
-            if peripheral {
-                client.peripheral_bootloader_jump(0).await?;
-            } else {
-                client.bootloader_jump().await?;
-            }
+            send().await?;
             Ok(())
         }
         Err(error) => Err(error.into()),
@@ -376,7 +384,7 @@ async fn jump_peripheral(client: &Client) -> Result<()> {
     if !status.connected {
         bail!("the right half is not connected");
     }
-    request_bootloader_jump(client, true).await?;
+    request_reset(client, ResetTarget::PeripheralBootloader).await?;
     let started = tokio::time::Instant::now();
     loop {
         if !client.get_peripheral_status(0).await?.connected {
