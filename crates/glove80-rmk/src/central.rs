@@ -110,7 +110,7 @@ mod keyboard_central {
     /// route the right-half UF2 action to the peripheral.
     #[register_processor(event)]
     fn magic_key_actions() {
-        crate::remote_boot::MagicKeyActions
+        crate::remote_boot::MagicKeyActions::new()
     }
 
     /// Keep the information-view battery bars synchronized with both halves.
