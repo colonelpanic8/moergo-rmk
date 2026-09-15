@@ -11,9 +11,9 @@ use rynk::rmk_types::combo::ComboDefinition;
 use rynk::rmk_types::fork::Fork;
 use rynk::rmk_types::morse::Morse;
 use rynk::rmk_types::protocol::rynk::{
-    BehaviorConfig, BehaviorOptions, LayerMetadata, LightingAdvancedConditionalSceneCell,
-    LightingBackgroundState, LightingExtensionParam, LightingExtensionState, LightingLayerPolicy,
-    LightingLedId, LightingMatrixPosition, LightingOutputMode, LightingSceneCell, LightingZone,
+    BehaviorConfig, BehaviorOptions, LayerMetadata, LightingBackgroundState,
+    LightingExtensionParam, LightingExtensionState, LightingLayerPolicy, LightingLedId,
+    LightingMatrixPosition, LightingOutputMode, LightingRule, LightingSceneCell, LightingZone,
     LightingZoneId, MorseProfileEntry, PointingConfig,
 };
 use serde::{Deserialize, Serialize};
@@ -149,9 +149,9 @@ pub struct LightingSnapshot {
     /// The mutable, ordered conditional table. `undefined` means the firmware
     /// has no such table at all, which stays distinct from a supported-but-empty
     /// one: a file naming rules conflicts with the former and not the latter.
-    /// Cells are the extended form; hosts talking to older firmware pass
-    /// `connection: undefined` on every cell.
-    pub conditional_scenes: Option<Vec<LightingAdvancedConditionalSceneCell>>,
+    /// Rules use the self-describing predicate encoding. The session layer
+    /// adapts legacy firmware before crossing this boundary.
+    pub conditional_scenes: Option<Vec<LightingRule>>,
 }
 
 /// The board's advertised semantic topology, as the Rynk lighting metadata

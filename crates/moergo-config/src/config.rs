@@ -2,7 +2,7 @@
 
 use std::collections::BTreeMap;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use rynk::rmk_types::action::{Action, KeyAction};
 use rynk::rmk_types::auto_mouse::AutoMouseLayerConfig as WireAutoMouseLayerConfig;
 use rynk::rmk_types::ble::BleState as WireBleState;
@@ -22,10 +22,15 @@ use rynk::rmk_types::protocol::rynk::{
     LightingConnectionCondition, LightingEffect, LightingEffectsCondition,
     LightingExtendedConditionalSceneCell, LightingExtensionState, LightingIndicatorCondition,
     LightingLayerCondition, LightingLayerPolicy, LightingLayersCondition, LightingLedId,
-    LightingMatrixPosition, LightingNodeId, LightingOutputMode, LightingRgb8, LightingSceneCell,
-    LightingZoneId, PointingConfig as WirePointingConfig,
-    PointingDeviceConfig as WirePointingDeviceConfig,
+    LightingMaintenanceCondition, LightingMatrixPosition, LightingNodeId, LightingOutputMode,
+    LightingRgb8, LightingRule, LightingRulePredicate, LightingSceneCell, LightingSplitForce,
+    LightingSplitLink, LightingSplitTransportCondition, LightingZoneId,
+    PointingConfig as WirePointingConfig, PointingDeviceConfig as WirePointingDeviceConfig,
     PointingLayerOverride as WirePointingLayerOverride, BLE_NAME_MAX_LEN, LAYER_NAME_MAX_LEN,
+    LIGHTING_PREDICATE_BATTERY, LIGHTING_PREDICATE_CONNECTION, LIGHTING_PREDICATE_EFFECTS,
+    LIGHTING_PREDICATE_INDICATORS, LIGHTING_PREDICATE_LAYER, LIGHTING_PREDICATE_LAYERS,
+    LIGHTING_PREDICATE_MAINTENANCE, LIGHTING_PREDICATE_OUTPUT_MODE,
+    LIGHTING_PREDICATE_SPLIT_TRANSPORT,
 };
 use rynk::{KeyId, KeyTopology, LogicalKey};
 use serde::{Deserialize, Serialize};
@@ -550,6 +555,8 @@ impl LayerConfig {
                                 effects: when.effects,
                                 layers: when.layers.clone(),
                                 indicators: when.indicators,
+                                maintenance: when.maintenance,
+                                split_transport: when.split_transport,
                             });
                         }
                     }
@@ -669,6 +676,10 @@ pub struct KeyConditionConfig {
     pub effects: Option<EffectsConditionConfig>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub indicators: Option<IndicatorsConditionConfig>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub maintenance: Option<MaintenanceStateConfig>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub split_transport: Option<SplitTransportConditionConfig>,
 }
 
 impl LayerKeyConfig {
@@ -1235,6 +1246,43 @@ pub struct ConditionalSceneConfig {
     /// is on for a board whose Caps Lock lives on a held layer.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub indicators: Option<IndicatorsConditionConfig>,
+    /// Gate on whether host mutations are currently unlocked.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub maintenance: Option<MaintenanceStateConfig>,
+    /// Gate on the automatic split selector's live link and/or volatile force.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub split_transport: Option<SplitTransportConditionConfig>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum MaintenanceStateConfig {
+    Unlocked,
+    Locked,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct SplitTransportConditionConfig {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub link: Option<SplitLinkConfig>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub force: Option<SplitForceConfig>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum SplitLinkConfig {
+    Wired,
+    Ble,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum SplitForceConfig {
+    Auto,
+    Wired,
+    Ble,
 }
 
 /// Gate a rule on the host's lock indicators. Every named indicator must hold;
@@ -1880,6 +1928,30 @@ impl RuntimeConfig {
                     .iter()
                     .filter(|entry| entry.action.is_some() && entry.target.key_needs_topology())
                     .map(|entry| format!("layer '{}' key {}", layer.id, entry.target))
+            })
+            .collect()
+    }
+
+    /// Maintenance toggles whose colocated lighting rules do not expose the
+    /// lock state. This is advisory: a user may intentionally keep one dark.
+    pub fn maintenance_indicator_warnings(&self) -> Vec<String> {
+        self.layers
+            .iter()
+            .flat_map(|layer| {
+                layer.key_entries.iter().filter_map(|entry| {
+                    let toggles = entry.action.as_deref() == Some("MAINT_LOCK_TOG");
+                    let indicates = entry.rules.iter().any(|rule| {
+                        rule.when
+                            .as_ref()
+                            .is_some_and(|when| when.maintenance.is_some())
+                    });
+                    (toggles && !indicates).then(|| {
+                        format!(
+                            "warning: layer '{}' key {} binds MAINT_LOCK_TOG without a maintenance lighting rule",
+                            layer.id, entry.target
+                        )
+                    })
+                })
             })
             .collect()
     }
@@ -3608,6 +3680,14 @@ pub fn validate_conditional_scene(index: usize, cell: &ConditionalSceneConfig) -
             "conditional rule {index} has an empty indicators table; name at least one of num_lock, caps_lock, scroll_lock"
         );
     }
+    if cell
+        .split_transport
+        .is_some_and(|condition| condition.link.is_none() && condition.force.is_none())
+    {
+        bail!(
+            "conditional rule {index} has an empty split_transport table; name link and/or force"
+        );
+    }
     let timings_set = cell.period_ms.is_some()
         || cell.phase_ms.is_some()
         || cell.duty.is_some()
@@ -3817,6 +3897,8 @@ pub fn conditional_scene_from_wire(
     ConditionalSceneConfig {
         layers: None,
         indicators: None,
+        maintenance: None,
+        split_transport: None,
         connection,
         effects,
         target: KeyTargetConfig::led(cell.led_id.0),
@@ -3901,6 +3983,9 @@ pub fn conditional_scene_to_wire(
     if cell.indicators.is_some() {
         bail!("host lock-indicator conditions require advanced conditional-scene endpoints");
     }
+    if cell.maintenance.is_some() || cell.split_transport.is_some() {
+        bail!("maintenance and split-transport conditions require lighting-rule endpoints");
+    }
     let connection = cell.connection.map(|c| LightingConnectionCondition {
         transport: c.transport.map(|transport| match transport {
             TransportConfig::Usb => LightingActiveTransport::Usb,
@@ -3979,6 +4064,9 @@ pub fn conditional_scene_to_advanced_wire(
     cell: &ConditionalSceneConfig,
 ) -> Result<LightingAdvancedConditionalSceneCell> {
     validate_conditional_scene(0, cell)?;
+    if cell.maintenance.is_some() || cell.split_transport.is_some() {
+        bail!("maintenance and split-transport conditions require lighting-rule endpoints");
+    }
     let mut legacy = cell.clone();
     legacy.layers = None;
     legacy.indicators = None;
@@ -3991,6 +4079,119 @@ pub fn conditional_scene_to_advanced_wire(
         .transpose()?;
     result.indicators = cell.indicators.map(IndicatorsConditionConfig::to_wire);
     Ok(result)
+}
+
+/// Decode the self-describing rule representation into the TOML model.
+pub fn conditional_scene_from_rule(rule: LightingRule) -> Result<ConditionalSceneConfig> {
+    let mut legacy_predicates = Vec::new();
+    let mut maintenance = None;
+    let mut split_transport = None;
+    for predicate in rule
+        .predicates()
+        .map_err(|error| anyhow!("invalid lighting rule predicates: {error:?}"))?
+    {
+        match predicate {
+            LightingRulePredicate::Maintenance(value) => {
+                maintenance = Some(if value.unlocked {
+                    MaintenanceStateConfig::Unlocked
+                } else {
+                    MaintenanceStateConfig::Locked
+                });
+            }
+            LightingRulePredicate::SplitTransport(value) => {
+                split_transport = Some(SplitTransportConditionConfig {
+                    link: value.link.map(|link| match link {
+                        LightingSplitLink::Wired => SplitLinkConfig::Wired,
+                        LightingSplitLink::Ble => SplitLinkConfig::Ble,
+                    }),
+                    force: value.force.map(|force| match force {
+                        LightingSplitForce::Auto => SplitForceConfig::Auto,
+                        LightingSplitForce::Wired => SplitForceConfig::Wired,
+                        LightingSplitForce::Ble => SplitForceConfig::Ble,
+                    }),
+                });
+            }
+            LightingRulePredicate::Unknown { tag, .. } => {
+                bail!("lighting rule uses unknown predicate tag {tag}, which TOML cannot represent")
+            }
+            known => legacy_predicates.push(known),
+        }
+    }
+    let legacy_rule = LightingRule::from_predicates(rule.led_id, rule.effect, &legacy_predicates)
+        .map_err(|error| anyhow!("invalid lighting rule: {error:?}"))?;
+    let mut result = conditional_scene_from_advanced_wire(
+        legacy_rule
+            .to_advanced()
+            .map_err(|error| anyhow!("invalid lighting rule: {error:?}"))?,
+    )?;
+    result.maintenance = maintenance;
+    result.split_transport = split_transport;
+    validate_conditional_scene(0, &result)?;
+    Ok(result)
+}
+
+/// Encode the TOML model into the canonical, self-describing rule format.
+pub fn conditional_scene_to_rule(cell: &ConditionalSceneConfig) -> Result<LightingRule> {
+    validate_conditional_scene(0, cell)?;
+    let mut legacy = cell.clone();
+    legacy.maintenance = None;
+    legacy.split_transport = None;
+    let advanced = conditional_scene_to_advanced_wire(&legacy)?;
+    let base = LightingRule::from_advanced(advanced)
+        .map_err(|error| anyhow!("invalid lighting rule: {error:?}"))?;
+    let mut predicates = base
+        .predicates()
+        .map_err(|error| anyhow!("invalid lighting rule predicates: {error:?}"))?
+        .into_iter()
+        .collect::<Vec<_>>();
+    if let Some(maintenance) = cell.maintenance {
+        predicates.push(LightingRulePredicate::Maintenance(
+            LightingMaintenanceCondition {
+                unlocked: matches!(maintenance, MaintenanceStateConfig::Unlocked),
+            },
+        ));
+    }
+    if let Some(split) = cell.split_transport {
+        predicates.push(LightingRulePredicate::SplitTransport(
+            LightingSplitTransportCondition {
+                link: split.link.map(|link| match link {
+                    SplitLinkConfig::Wired => LightingSplitLink::Wired,
+                    SplitLinkConfig::Ble => LightingSplitLink::Ble,
+                }),
+                force: split.force.map(|force| match force {
+                    SplitForceConfig::Auto => LightingSplitForce::Auto,
+                    SplitForceConfig::Wired => LightingSplitForce::Wired,
+                    SplitForceConfig::Ble => LightingSplitForce::Ble,
+                }),
+            },
+        ));
+    }
+    LightingRule::from_predicates(base.led_id, base.effect, &predicates)
+        .map_err(|error| anyhow!("invalid lighting rule: {error:?}"))
+}
+
+/// Predicate tags a configuration rule needs the connected firmware to parse.
+pub fn conditional_scene_predicate_mask(cell: &ConditionalSceneConfig) -> u64 {
+    let mut mask = 0;
+    for (present, tag) in [
+        (cell.layer.is_some(), LIGHTING_PREDICATE_LAYER),
+        (cell.battery.is_some(), LIGHTING_PREDICATE_BATTERY),
+        (cell.output_mode.is_some(), LIGHTING_PREDICATE_OUTPUT_MODE),
+        (cell.connection.is_some(), LIGHTING_PREDICATE_CONNECTION),
+        (cell.effects.is_some(), LIGHTING_PREDICATE_EFFECTS),
+        (cell.layers.is_some(), LIGHTING_PREDICATE_LAYERS),
+        (cell.indicators.is_some(), LIGHTING_PREDICATE_INDICATORS),
+        (cell.maintenance.is_some(), LIGHTING_PREDICATE_MAINTENANCE),
+        (
+            cell.split_transport.is_some(),
+            LIGHTING_PREDICATE_SPLIT_TRANSPORT,
+        ),
+    ] {
+        if present {
+            mask |= 1u64 << tag;
+        }
+    }
+    mask
 }
 
 pub fn background_from_wire(state: LightingBackgroundState) -> BackgroundConfig {
@@ -5362,6 +5563,8 @@ Density = 6
         let rule = |led: u16| ConditionalSceneConfig {
             layers: None,
             indicators: None,
+            maintenance: None,
+            split_transport: None,
             connection: None,
             target: KeyTargetConfig::led(led),
             color: "#0040a0".into(),
@@ -5445,6 +5648,8 @@ Density = 6
             snap.conditional_scenes = Some(vec![ConditionalSceneConfig {
                 layers: None,
                 indicators: None,
+                maintenance: None,
+                split_transport: None,
                 connection: None,
                 target: KeyTargetConfig::led(75),
                 color: "#0040a0".into(),
@@ -5603,6 +5808,31 @@ Density = 6
     }
 
     #[test]
+    fn maintenance_and_split_transport_round_trip_through_rules() {
+        for source in [
+            "led = 1\ncolor = \"#008000\"\nmaintenance = \"unlocked\"",
+            "led = 2\ncolor = \"#0040a0\"\nsplit_transport = { link = \"ble\", force = \"auto\" }",
+        ] {
+            let cell: ConditionalSceneConfig = toml::from_str(source).unwrap();
+            let rule = conditional_scene_to_rule(&cell).unwrap();
+            assert_eq!(conditional_scene_from_rule(rule).unwrap(), cell);
+            assert!(conditional_scene_to_advanced_wire(&cell).is_err());
+            assert_eq!(
+                toml::from_str::<ConditionalSceneConfig>(&toml::to_string(&cell).unwrap()).unwrap(),
+                cell
+            );
+        }
+    }
+
+    #[test]
+    fn split_transport_condition_rejects_an_empty_table() {
+        let cell: ConditionalSceneConfig =
+            toml::from_str("led = 1\ncolor = \"#ff2000\"\nsplit_transport = {}").unwrap();
+        assert!(validate_conditional_scene(0, &cell).is_err());
+        assert!(conditional_scene_to_rule(&cell).is_err());
+    }
+
+    #[test]
     fn layer_conditions_readback_rejects_contradictory_gates() {
         let cell: ConditionalSceneConfig = toml::from_str("led = 1\ncolor = \"#ff00ff\"").unwrap();
         let valid = conditional_scene_to_advanced_wire(&cell).unwrap();
@@ -5684,6 +5914,8 @@ Density = 6
         let mut cell = ConditionalSceneConfig {
             layers: None,
             indicators: None,
+            maintenance: None,
+            split_transport: None,
             connection: None,
             target: KeyTargetConfig::led(75),
             color: "#0040a0".into(),

@@ -38,7 +38,7 @@ fn board_firmware_compiles_the_same_shared_sources_and_rmk_features() {
         .unwrap()
         .clone();
     const GO60_FLASH_BUDGET_SWITCH: &str = "_no_split_peripheral_battery_service";
-    const GLOVE80_LEGACY_LIGHTING_ENDPOINTS: &str = "lighting_legacy_conditional_scenes";
+    const LEGACY_LIGHTING_ENDPOINTS: &str = "lighting_legacy_conditional_scenes";
     assert!(
         !glove80_features
             .iter()
@@ -50,19 +50,17 @@ fn board_firmware_compiles_the_same_shared_sources_and_rmk_features() {
             .any(|feature| feature.as_str() == Some(GO60_FLASH_BUDGET_SWITCH))
     );
     assert!(
-        glove80_features
-            .iter()
-            .any(|feature| feature.as_str() == Some(GLOVE80_LEGACY_LIGHTING_ENDPOINTS))
-    );
-    assert!(
         !go60_features
             .iter()
-            .any(|feature| feature.as_str() == Some(GLOVE80_LEGACY_LIGHTING_ENDPOINTS))
+            .any(|feature| feature.as_str() == Some(LEGACY_LIGHTING_ENDPOINTS))
+    );
+    assert!(
+        !glove80_features
+            .iter()
+            .any(|feature| feature.as_str() == Some(LEGACY_LIGHTING_ENDPOINTS))
     );
     glove80_features.retain(|feature| feature.as_str() != Some(GO60_FLASH_BUDGET_SWITCH));
     go60_features.retain(|feature| feature.as_str() != Some(GO60_FLASH_BUDGET_SWITCH));
-    glove80_features.retain(|feature| feature.as_str() != Some(GLOVE80_LEGACY_LIGHTING_ENDPOINTS));
-    go60_features.retain(|feature| feature.as_str() != Some(GLOVE80_LEGACY_LIGHTING_ENDPOINTS));
     assert_eq!(
         glove80_features, go60_features,
         "board crates must enable the same RMK capabilities"

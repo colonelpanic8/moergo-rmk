@@ -9,7 +9,8 @@ use anyhow::{anyhow, bail, Context, Result};
 use clap::{Subcommand, ValueEnum};
 use moergo_config::{
     background_from_wire, background_to_wire, conditional_scene_from_advanced_wire,
-    conditional_scene_from_wire, conditional_scene_to_advanced_wire, conditional_scene_to_wire,
+    conditional_scene_from_rule, conditional_scene_from_wire, conditional_scene_predicate_mask,
+    conditional_scene_to_advanced_wire, conditional_scene_to_rule, conditional_scene_to_wire,
     differences, effects_from_wire, effects_to_wire, live_param_tables, output_mode_from_wire,
     output_mode_to_wire, params_to_writes, runtime_config_from_moergo_json, scene_from_wire,
     scene_policy_from_wire, scene_policy_to_wire, scene_to_wire, snapshot_to_moergo_json,
@@ -21,8 +22,8 @@ use rynk::rmk_types::pointing::PointingMode;
 use rynk::rmk_types::protocol::rynk::{
     BleName, Cmd, LayerMetadata, LightingAdvancedConditionalSceneCell, LightingError,
     LightingExtendedConditionalSceneCell, LightingExtensionNameKind,
-    LightingExtensionParamsRequest, LightingFeatureFlags, LightingMutableState,
-    MorseProfileEntry as WireMorseProfileEntry, PointingCapabilities,
+    LightingExtensionParamsRequest, LightingFeatureFlags, LightingMutableState, LightingRule,
+    LightingRuleStatus, MorseProfileEntry as WireMorseProfileEntry, PointingCapabilities,
     PointingConfig as WirePointingConfig, RynkError, SetAutoMouseLayerConfigsRequest,
     SetKeymapBulkRequest, SetLightingExtensionLayersRequest, SetLightingExtensionParamRequest,
     SetLightingExtensionStateRequest, SetLightingLayerPolicyRequest, SetLightingOutputModeRequest,
@@ -159,6 +160,19 @@ async fn read_advanced_runtime_conditionals(
     Err(last_error.unwrap_or_else(|| anyhow!("advanced conditional table read failed")))
 }
 
+async fn read_runtime_rules(client: &Client) -> Result<Vec<LightingRule>> {
+    let mut last_error = None;
+    for _ in 0..CONDITIONAL_READ_ATTEMPTS {
+        match tokio::time::timeout(CONDITIONAL_READ_TIMEOUT, client.read_all_lighting_rules()).await
+        {
+            Ok(Ok((_, rules))) => return Ok(rules),
+            Ok(Err(error)) => last_error = Some(anyhow!(error)),
+            Err(_) => last_error = Some(anyhow!("lighting rule table read timed out")),
+        }
+    }
+    Err(last_error.unwrap_or_else(|| anyhow!("lighting rule table read failed")))
+}
+
 async fn read_extended_runtime_conditionals(
     client: &Client,
 ) -> Result<Vec<LightingExtendedConditionalSceneCell>> {
@@ -227,6 +241,9 @@ pub fn run(selector: &Selector, command: &ConfigCommand) -> Result<()> {
         // the keys the author meant, only that they are well formed.
         for deferred in config.deferred_bindings() {
             println!("{deferred} resolves against the connected keyboard");
+        }
+        for warning in config.maintenance_indicator_warnings() {
+            println!("{warning}");
         }
         return Ok(());
     }
@@ -343,7 +360,15 @@ async fn read_snapshot(client: &Client) -> Result<Snapshot> {
     // Firmware that predates the runtime conditional table reports nothing
     // rather than an empty table, so a file that names no rules does not read
     // as "delete what the board has".
-    let conditional_scenes = if lighting_caps
+    let conditional_scenes = if lighting_caps.features.contains(LightingFeatureFlags::RULES) {
+        Some(
+            read_runtime_rules(client)
+                .await?
+                .into_iter()
+                .map(conditional_scene_from_rule)
+                .collect::<Result<Vec<_>>>()?,
+        )
+    } else if lighting_caps
         .features
         .contains(LightingFeatureFlags::RUNTIME_LAYER_INDICATOR_CONDITIONS)
     {
@@ -1295,8 +1320,19 @@ async fn apply_snapshot(client: &Client, desired: &Snapshot, before: &Snapshot) 
     } else {
         None
     };
+    let lighting_rule_status = if lighting_features
+        .is_some_and(|features| features.contains(LightingFeatureFlags::RULES))
+    {
+        Some(client.get_lighting_rule_status().await?)
+    } else {
+        None
+    };
     if let Some(lighting) = &desired.lighting {
-        require_layer_conditions_capability(lighting, lighting_features.unwrap())?;
+        require_conditions_capability(
+            lighting,
+            lighting_features.unwrap(),
+            lighting_rule_status.as_ref(),
+        )?;
     }
     let capabilities = client.get_capabilities().await?;
     if desired.rows != capabilities.num_rows || desired.cols != capabilities.num_cols {
@@ -1509,9 +1545,22 @@ async fn apply_snapshot(client: &Client, desired: &Snapshot, before: &Snapshot) 
                 ),
                 Some(live) if live == wanted_conditional => {}
                 Some(_) => {
-                    let status = client.get_lighting_runtime_conditional_scene_status().await?;
                     let features = lighting_features.unwrap();
-                    if features.contains(LightingFeatureFlags::RUNTIME_LAYER_INDICATOR_CONDITIONS) {
+                    if features.contains(LightingFeatureFlags::RULES) {
+                        let status = client.get_lighting_rule_status().await?;
+                        let rules = wanted_conditional
+                            .iter()
+                            .map(conditional_scene_to_rule)
+                            .collect::<Result<Vec<_>>>()?;
+                        client
+                            .replace_all_lighting_rules(status.revision, &rules)
+                            .await?;
+                    } else if features
+                        .contains(LightingFeatureFlags::RUNTIME_LAYER_INDICATOR_CONDITIONS)
+                    {
+                        let status = client
+                            .get_lighting_advanced_runtime_conditional_scene_status()
+                            .await?;
                         let cells = wanted_conditional
                             .iter()
                             .map(conditional_scene_to_advanced_wire)
@@ -1523,6 +1572,9 @@ async fn apply_snapshot(client: &Client, desired: &Snapshot, before: &Snapshot) 
                             )
                             .await?;
                     } else if features.contains(LightingFeatureFlags::RUNTIME_EFFECTS_CONDITIONS) {
+                        let status = client
+                            .get_lighting_extended_runtime_conditional_scene_status()
+                            .await?;
                         let cells = wanted_conditional
                             .iter()
                             .map(conditional_scene_to_wire)
@@ -1534,6 +1586,7 @@ async fn apply_snapshot(client: &Client, desired: &Snapshot, before: &Snapshot) 
                             )
                             .await?;
                     } else {
+                        let status = client.get_lighting_runtime_conditional_scene_status().await?;
                         if let Some(gated) = wanted_conditional
                             .iter()
                             .position(|c| c.connection.is_some() || c.effects.is_some())
@@ -1568,10 +1621,39 @@ async fn apply_snapshot(client: &Client, desired: &Snapshot, before: &Snapshot) 
     Ok(())
 }
 
-fn require_layer_conditions_capability(
+fn require_conditions_capability(
     lighting: &LightingSnapshot,
     features: LightingFeatureFlags,
+    rule_status: Option<&LightingRuleStatus>,
 ) -> Result<()> {
+    if let Some(status) = rule_status {
+        if let Some((index, missing)) = lighting
+            .conditional_scenes
+            .as_ref()
+            .into_iter()
+            .flatten()
+            .enumerate()
+            .find_map(|(index, cell)| {
+                let missing = conditional_scene_predicate_mask(cell) & !status.predicates;
+                (missing != 0).then_some((index, missing))
+            })
+        {
+            let tag = missing.trailing_zeros();
+            bail!(
+                "conditional rule {index} uses predicate tag {tag}, but the keyboard does not advertise support for it"
+            );
+        }
+        return Ok(());
+    }
+    if lighting.conditional_scenes.as_ref().is_some_and(|cells| {
+        cells
+            .iter()
+            .any(|cell| cell.maintenance.is_some() || cell.split_transport.is_some())
+    }) {
+        bail!(
+            "configuration uses maintenance or split-transport conditions but the keyboard firmware predates lighting-rule support; flash first"
+        );
+    }
     if !features.contains(LightingFeatureFlags::RUNTIME_LAYER_INDICATOR_CONDITIONS)
         && lighting.conditional_scenes.as_ref().is_some_and(|cells| {
             cells
@@ -1718,14 +1800,15 @@ mod tests {
         .unwrap();
         let mut snapshot = config.snapshot().unwrap();
         let legacy = LightingFeatureFlags(LightingFeatureFlags::RUNTIME_EFFECTS_CONDITIONS);
-        assert!(require_layer_conditions_capability(&snapshot, legacy).is_err());
-        assert!(require_layer_conditions_capability(
+        assert!(require_conditions_capability(&snapshot, legacy, None).is_err());
+        assert!(require_conditions_capability(
             &snapshot,
-            LightingFeatureFlags(LightingFeatureFlags::RUNTIME_LAYER_INDICATOR_CONDITIONS)
+            LightingFeatureFlags(LightingFeatureFlags::RUNTIME_LAYER_INDICATOR_CONDITIONS),
+            None,
         )
         .is_ok());
         snapshot.conditional_scenes.as_mut().unwrap()[0].layers = None;
-        assert!(require_layer_conditions_capability(&snapshot, legacy).is_ok());
+        assert!(require_conditions_capability(&snapshot, legacy, None).is_ok());
     }
 
     #[test]

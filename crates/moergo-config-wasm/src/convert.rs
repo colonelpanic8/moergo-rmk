@@ -169,8 +169,8 @@ fn lighting_from_wire(
             .map(|cells| {
                 cells
                     .iter()
-                    .copied()
-                    .map(model::conditional_scene_from_advanced_wire)
+                    .cloned()
+                    .map(model::conditional_scene_from_rule)
                     .collect::<anyhow::Result<Vec<_>>>()
             })
             .transpose()?,
@@ -294,7 +294,7 @@ fn lighting_to_wire(
             .map(|cells| {
                 cells
                     .iter()
-                    .map(model::conditional_scene_to_advanced_wire)
+                    .map(model::conditional_scene_to_rule)
                     .collect::<anyhow::Result<Vec<_>>>()
             })
             .transpose()?,
