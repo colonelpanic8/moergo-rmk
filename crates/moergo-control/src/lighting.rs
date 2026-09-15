@@ -20,6 +20,11 @@ pub enum LightingCommand {
     },
     /// Show lighting capabilities and topology.
     Caps,
+    /// Show the self-describing rule table status (0x0950).
+    RulesStatus,
+    /// Read every rule through the rule endpoints and write the same table back
+    /// through them, so the firmware persists it in the current storage format.
+    RulesRewrite,
     /// Set one or more overlay cells.
     Set {
         /// LED indices as comma-separated values and ranges.

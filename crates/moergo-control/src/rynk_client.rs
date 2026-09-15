@@ -489,6 +489,28 @@ async fn operate_lighting(client: &Client, command: &LightingCommand) -> Result<
                 started.elapsed().as_secs_f64() * 1000.0
             );
         }
+        LightingCommand::RulesStatus => {
+            let status = client.get_lighting_rule_status().await?;
+            println!(
+                "revision: {}\ncapacity: {}\nrules: {}\npage bytes: {}\nmax predicates: {}\npredicates: 0x{:x}",
+                status.revision,
+                status.capacity,
+                status.rule_len,
+                status.page_bytes,
+                status.max_predicates,
+                status.predicates,
+            );
+        }
+        LightingCommand::RulesRewrite => {
+            let (revision, rules) = client.read_all_lighting_rules().await?;
+            let state = client.replace_all_lighting_rules(revision, &rules).await?;
+            println!(
+                "rewrote {} rules through the rule endpoints; revision {} -> {}",
+                rules.len(),
+                revision,
+                state.revision
+            );
+        }
         LightingCommand::Caps => {
             let caps = client.get_lighting_capabilities().await?;
             let effects = [

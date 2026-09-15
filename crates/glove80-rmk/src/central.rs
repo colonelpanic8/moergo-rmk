@@ -69,24 +69,18 @@ mod keyboard_central {
             { crate::lighting::SCENE_CAPACITY },
         >::new();
         let persisted_policy = storage.read_lighting_scenes(&mut persisted_scenes).await;
-        let mut persisted_runtime_conditional_scenes = ::rmk::heapless::Vec::<
-            ::rmk::types::protocol::rynk::LightingAdvancedConditionalSceneCell,
-            { crate::lighting::SCENE_CAPACITY },
-        >::new();
-        storage
-            .read_lighting_runtime_conditional_scenes(&mut persisted_runtime_conditional_scenes)
-            .await;
         let preferences = crate::lighting::load_preferences(&mut storage).await;
-        crate::central_lighting::init(
-            keymap_ref,
+        let mut engine = crate::central_lighting::engine_with_scenes(
             persisted_scenes.as_slice(),
             persisted_policy,
-            persisted_runtime_conditional_scenes.as_slice(),
             preferences,
-            p.SPI3,
-            p.P0_27,
-            p.P0_31,
-        )
+        );
+        storage
+            .stream_lighting_runtime_conditional_scenes(crate::lighting::SCENE_CAPACITY, |rule| {
+                crate::central_lighting::install_rule(&mut engine, rule)
+            })
+            .await;
+        crate::central_lighting::init(keymap_ref, engine, p.SPI3, p.P0_27, p.P0_31)
     }
 
     /// Type-erased Rynk requests are translated into the standard engine's

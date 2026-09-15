@@ -21,6 +21,7 @@ rmk = { path = "../../dependencies/rmk/rmk", default-features = false, features 
     "split",
     "async_matrix",
     "lighting",
+    "lighting_legacy_conditional_scenes",
     "adafruit_bl",
 ] }
 nrf-sdc = { git = "https://github.com/colonelpanic8/nrf-sdc", rev = "2dfeabc74b3ed423ace82e527a8bce9b221d6f17", features = [

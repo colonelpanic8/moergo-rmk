@@ -1183,6 +1183,8 @@ impl Message {
                             // these predicates and carries neither.
                             layers: None,
                             indicators: None,
+                            maintenance: None,
+                            split_transport: None,
                             output_mode: match bytes[25] {
                                 0 => Some(OutputMode::AlwaysOn),
                                 1 => Some(OutputMode::AlwaysOff),

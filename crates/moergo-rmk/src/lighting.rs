@@ -834,6 +834,12 @@ static PERIPHERAL_CONTEXT: BlockingMutex<rmk::RawMutex, Cell<LightingContext>> =
         // until then the peripheral knows of no bonds.
         bonded_slots: 0,
         connection: rmk::types::connection::ConnectionStatus::new(),
+        maintenance_unlocked: false,
+        split_transport: rmk::lighting::SplitTransportState {
+            auto: false,
+            force: rmk::lighting::SplitForce::Auto,
+            wired: false,
+        },
     }));
 
 #[derive(Clone, Copy)]

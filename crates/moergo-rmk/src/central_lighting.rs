@@ -21,7 +21,7 @@ use rmk::event::{
 use rmk::host::{
     LightingReplicationStatus, PeripheralReplicaStatus, RemoteFrame, RemoteFramePort,
     ReplicationHealth, ReplicationMachineState, RynkLightingController, RynkLightingDescriptor,
-    RynkLightingMailbox, StandardRynkLightingAdapter, install_lighting_runtime_conditional_scenes,
+    RynkLightingMailbox, StandardRynkLightingAdapter, install_lighting_rule,
     install_lighting_scenes,
 };
 use rmk::keymap::KeyMap;
@@ -30,9 +30,7 @@ use rmk::lighting::{
     LogicalFrame, Rgb8, StandardCommand,
 };
 use rmk::split_app::SplitAppData;
-use rmk::types::protocol::rynk::{
-    LightingAdvancedConditionalSceneCell, LightingLayerPolicy, LightingSceneCell,
-};
+use rmk::types::protocol::rynk::{LightingLayerPolicy, LightingRule, LightingSceneCell};
 
 use crate::lighting::{
     BOOTLOADER_TAG, COMMAND_CAPACITY, CORE_MAILBOX, Engine, HalfOutput, LightingHardware,
@@ -320,13 +318,32 @@ pub fn route_peripheral_bootloader(slot: u8) -> Result<(), rmk::types::protocol:
         .map_err(|_| rmk::types::protocol::rynk::RynkError::NotReady)
 }
 
-#[allow(clippy::too_many_arguments)]
-pub fn init<'keymap, 'data>(
-    keymap: &'keymap KeyMap<'data>,
+/// Build the engine with the durable scene table installed. The board streams
+/// persisted runtime rules into it with [`install_rule`] before [`init`], so no
+/// table-sized buffer ever exists at boot.
+pub fn engine_with_scenes(
     persisted_scenes: &[LightingSceneCell],
     persisted_policy: Option<LightingLayerPolicy>,
-    persisted_runtime_conditional_scenes: &[LightingAdvancedConditionalSceneCell],
     preferences: crate::lighting::Preferences,
+) -> Engine {
+    let mut engine = crate::lighting::engine(preferences);
+    install_lighting_scenes(
+        &mut engine,
+        &crate::LIGHTING_TOPOLOGY,
+        persisted_scenes,
+        persisted_policy,
+    );
+    engine
+}
+
+#[inline(never)]
+pub fn install_rule(engine: &mut Engine, rule: LightingRule) {
+    install_lighting_rule(engine, crate::LIGHTING_TOPOLOGY, rule);
+}
+
+pub fn init<'keymap, 'data>(
+    keymap: &'keymap KeyMap<'data>,
+    engine: Engine,
     spi: Peri<'static, SPI3>,
     data_pin: Peri<'static, impl Pin>,
     chain_power_pin: Peri<'static, impl Pin>,
@@ -338,18 +355,6 @@ pub fn init<'keymap, 'data>(
     COMMAND_CAPACITY,
 > {
     let provider = KeymapLightingState::new(keymap).expect("board layer count fits lighting state");
-    let mut engine = crate::lighting::engine(preferences);
-    install_lighting_scenes(
-        &mut engine,
-        &crate::LIGHTING_TOPOLOGY,
-        persisted_scenes,
-        persisted_policy,
-    );
-    install_lighting_runtime_conditional_scenes(
-        &mut engine,
-        &crate::LIGHTING_TOPOLOGY,
-        persisted_runtime_conditional_scenes,
-    );
     let service = LightingService::new(provider, engine, LogicalFrame::new(Rgb8::BLACK))
         .with_present_interval(crate::lighting::PRESENT_REFRESH_INTERVAL);
     let output = HalfOutput::left(LightingHardware::new(spi, data_pin, chain_power_pin));
