@@ -6,8 +6,6 @@ pub const BOARD_SCENE_CAPACITY: usize = 100;
 pub const BOARD_CHANNEL_CEILING: u8 = 230;
 pub const BOARD_KEEP_LED_POWER_WHILE_AWAKE: bool = false;
 pub const BOARD_KEEP_LED_POWER_WHILE_SUSPENDED: bool = false;
-pub const BOARD_MAINTENANCE_LED: u16 = 12;
-pub const BOARD_SPLIT_TRANSPORT_LED: u16 = 12;
 
 #[allow(dead_code)]
 #[path = "../../moergo-rmk/src/lighting.rs"]

@@ -15,13 +15,12 @@ use rmk::event::{
     EventSubscriber, KeyboardEvent, KeyboardEventPos, LayerChangeEvent, MaintenanceModeEvent,
     SleepStateEvent, SubscribableEvent,
 };
-use rmk::lighting::compositor::{Contribution, LightingSource, RenderInput};
-use rmk::lighting::topology::{LedSlot, MatrixPosition};
+use rmk::lighting::topology::MatrixPosition;
 use rmk::lighting::{
     BatteryStatusProvider, BuiltinEffect, ConditionalScenes, IndicatorState, LayerState,
-    LightingContext, LightingEffect, LightingMailbox, LightingOutput, LightingProcessor,
-    LightingService, LogicalFrame, Rgb8, SnapshotProvider, StandardCommand, StandardError,
-    StandardLightingEngine, StandardReplicaSlot, StandardReply,
+    LightingContext, LightingMailbox, LightingOutput, LightingProcessor, LightingService,
+    LogicalFrame, Rgb8, SnapshotProvider, StandardCommand, StandardError, StandardLightingEngine,
+    StandardReplicaSlot, StandardReply,
 };
 use rmk::storage::{
     LightingExtensionOverlayRecord, LightingExtensionParamsRecord, LightingExtensionRecord, Storage,
@@ -87,117 +86,10 @@ pub const COMMAND_CAPACITY: usize = 4;
 /// Sixteen covers sustained fast typing on one half.
 pub const REACTIVE_HITS: usize = 16;
 
-const MAGIC_LAYER: u8 = 2;
-const MAINTENANCE_LED: LedSlot = LedSlot(crate::BOARD_MAINTENANCE_LED);
-const MAINTENANCE_ENABLED: Rgb8 = Rgb8::new(0, 128, 0);
-const MAINTENANCE_DISABLED: Rgb8 = Rgb8::new(128, 0, 0);
-
-// Two readings on one key: red versus anything else says whether the cable
-// path is switched off, and green versus blue says which link is carrying the
-// halves right now.
-const SPLIT_TRANSPORT_LED: LedSlot = LedSlot(crate::BOARD_SPLIT_TRANSPORT_LED);
-/// Forced BLE, so the cable path is disabled — the same red the maintenance
-/// lock and the effects toggle use for a restricted control.
-const SPLIT_FORCED_BLE: Rgb8 = MAINTENANCE_DISABLED;
-/// Automatic and running on the wired link, which is the nominal state, so it
-/// takes the green those same toggles use for permitted.
-const SPLIT_AUTO_WIRED: Rgb8 = MAINTENANCE_ENABLED;
-/// Automatic but fallen back to BLE. Blue is BLE everywhere else on the board.
-const SPLIT_AUTO_BLE: Rgb8 = Rgb8::new(0, 64, 160);
-/// Pinned to the wired link, which only a host command can do. No other Magic
-/// control claims magenta.
-const SPLIT_FORCED_WIRED: Rgb8 = Rgb8::new(160, 0, 160);
-
-fn split_transport_color() -> Rgb8 {
-    use rmk::split::selector;
-    match (selector::forced_mode(), selector::wired_selected()) {
-        (selector::FORCE_BLE, _) => SPLIT_FORCED_BLE,
-        (selector::FORCE_WIRED, _) => SPLIT_FORCED_WIRED,
-        (_, true) => SPLIT_AUTO_WIRED,
-        (_, false) => SPLIT_AUTO_BLE,
-    }
-}
-
-pub struct BoardStatus {
-    compiled: ConditionalScenes<'static, BuiltinEffect, BoardBatteryProvider>,
-}
-
-impl BoardStatus {
-    pub const fn new(
-        compiled: ConditionalScenes<'static, BuiltinEffect, BoardBatteryProvider>,
-    ) -> Self {
-        Self { compiled }
-    }
-
-    fn maintenance_visible(input: &RenderInput<'_, LightingContext>) -> bool {
-        input.context.layers.is_active(MAGIC_LAYER)
-    }
-
-    fn split_transport_visible(input: &RenderInput<'_, LightingContext>) -> bool {
-        input.context.layers.is_active(MAGIC_LAYER) && rmk::split::selector::auto_enabled()
-    }
-}
-
-impl LightingSource<Rgb8, LightingContext> for BoardStatus {
-    fn len(&self, input: &RenderInput<'_, LightingContext>) -> usize {
-        crate::debug_stamp(13);
-        self.compiled.len(input)
-            + usize::from(Self::maintenance_visible(input))
-            + usize::from(Self::split_transport_visible(input))
-    }
-
-    fn slot(&self, index: usize, input: &RenderInput<'_, LightingContext>) -> LedSlot {
-        let compiled_len = self.compiled.len(input);
-        if index < compiled_len {
-            return self.compiled.slot(index, input);
-        }
-        let mut extra = index - compiled_len;
-        if Self::maintenance_visible(input) {
-            if extra == 0 {
-                return MAINTENANCE_LED;
-            }
-            extra -= 1;
-        }
-        if Self::split_transport_visible(input) && extra == 0 {
-            return SPLIT_TRANSPORT_LED;
-        }
-        panic!("LightingSource index must be below len")
-    }
-
-    fn contribution(
-        &mut self,
-        index: usize,
-        input: &RenderInput<'_, LightingContext>,
-    ) -> Contribution<Rgb8> {
-        let compiled_len = self.compiled.len(input);
-        if index < compiled_len {
-            return self.compiled.contribution(index, input);
-        }
-        let mut extra = index - compiled_len;
-        if Self::maintenance_visible(input) {
-            if extra == 0 {
-                let color = if rmk::state::maintenance_mode_enabled() {
-                    MAINTENANCE_ENABLED
-                } else {
-                    MAINTENANCE_DISABLED
-                };
-                return Contribution::Opaque(BuiltinEffect::solid(color).sample(input.now_ms));
-            }
-            extra -= 1;
-        }
-        if Self::split_transport_visible(input) && extra == 0 {
-            return Contribution::Opaque(
-                BuiltinEffect::solid(split_transport_color()).sample(input.now_ms),
-            );
-        }
-        panic!("LightingSource index must be below len")
-    }
-}
-
 pub type Engine = StandardLightingEngine<
     'static,
     PaletteFxSource<TopologyLayout<TOTAL_LEDS>, TOTAL_LEDS, REACTIVE_HITS>,
-    BoardStatus,
+    ConditionalScenes<'static, BuiltinEffect, BoardBatteryProvider>,
     TOTAL_LEDS,
     OVERLAY_CAPACITY,
     SCENE_CAPACITY,
@@ -721,10 +613,7 @@ pub fn engine(preferences: Preferences) -> Engine {
         crate::LIGHTING_BACKGROUND,
         crate::LIGHTING_LAYER_SCENES,
         palettefx,
-        BoardStatus::new(ConditionalScenes::new(
-            &crate::LIGHTING_CONDITIONAL_SCENE_CELLS,
-            &BOARD_BATTERIES,
-        )),
+        ConditionalScenes::new(&crate::LIGHTING_CONDITIONAL_SCENE_CELLS, &BOARD_BATTERIES),
     )
     .with_controls(controls)
     .with_battery_status_provider(&BOARD_BATTERIES)
