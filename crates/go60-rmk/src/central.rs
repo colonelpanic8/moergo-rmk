@@ -154,7 +154,7 @@ mod keyboard_central {
 
     #[register_processor(event)]
     fn magic_key_actions() {
-        crate::remote_boot::MagicKeyActions
+        crate::remote_boot::MagicKeyActions::new()
     }
 
     #[register_processor(event)]
