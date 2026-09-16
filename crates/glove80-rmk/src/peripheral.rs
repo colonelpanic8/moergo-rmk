@@ -3,7 +3,16 @@
 
 pub const BOARD_LEDS_PER_HALF: usize = 40;
 pub const BOARD_SCENE_CAPACITY: usize = 100;
-pub const BOARD_CHANNEL_CEILING: u8 = 230;
+/// 80% of full scale. MoErgo's own `glove80_lh_defconfig` caps
+/// `CONFIG_ZMK_RGB_UNDERGLOW_BRT_MAX` at 80 and warns verbatim: "DO NOT CHANGE
+/// CONFIG_ZMK_RGB_UNDERGLOW_BRT_MAX TO ABOVE 80. Configuring BRT_MAX above 80%
+/// will draw additional current and can potentially damage your computer.
+/// WARRANTY IS VOID IF BRT_MAX SET ABOVE 80." 230 sat above that line.
+pub const BOARD_CHANNEL_CEILING: u8 = 204;
+/// Treat configured colours as sRGB code values rather than raw LED duty.
+/// On, mid-tones land where a display puts them; configurations authored by
+/// eye against the old linear path will look different.
+pub const BOARD_SRGB_COLOR: bool = true;
 pub const BOARD_KEEP_LED_POWER_WHILE_AWAKE: bool = false;
 pub const BOARD_KEEP_LED_POWER_WHILE_SUSPENDED: bool = false;
 

@@ -40,6 +40,10 @@ mod split_lighting;
 mod lighting_output;
 
 use lighting::BatteryPair;
+use lighting_output::ColorProfile;
+
+const LINEAR: ColorProfile = ColorProfile::LINEAR;
+const SRGB: ColorProfile = ColorProfile::SRGB;
 use split_lighting::{
     AttestationDecision, AttestationRecovery, DecodeError, FrameChunkDecision, FramePageAssembly,
     Message, SnapshotStage,
@@ -63,9 +67,85 @@ fn mutable() -> StandardMutableState {
 #[test]
 fn visibility_uses_the_post_ceiling_output() {
     let reactive_idle = [Rgb8::new(0, 0, 1)];
-    assert!(!lighting_output::frame_visible(&reactive_idle, 102));
-    assert!(lighting_output::frame_visible(&reactive_idle, 230));
-    assert!(lighting_output::frame_visible(&[Rgb8::new(0, 0, 2)], 102));
+    assert!(!lighting_output::frame_visible(&reactive_idle, LINEAR, 102));
+    assert!(lighting_output::frame_visible(&reactive_idle, LINEAR, 230));
+    assert!(lighting_output::frame_visible(
+        &[Rgb8::new(0, 0, 2)],
+        LINEAR,
+        102
+    ));
+}
+
+#[test]
+fn the_linear_profile_reproduces_the_bare_ceiling() {
+    for value in 0..=u8::MAX {
+        let pixel = Rgb8::new(value, value, value);
+        let limited = lighting_output::limit_channel(value, 230);
+        assert_eq!(
+            LINEAR.apply(pixel, 230),
+            Rgb8::new(limited, limited, limited)
+        );
+    }
+}
+
+/// The complaint this profile answers: a hex colour written straight to the
+/// chain keeps its *encoded* channel ratio, not its light ratio, so a mid
+/// channel emits far more than the screen does and the hue moves with it.
+#[test]
+fn srgb_decode_restores_the_channel_ratio_a_display_emits() {
+    // #ff8000. A display emits G/R = 0.216 here; the raw byte gives 0.5.
+    let orange = Rgb8::new(0xff, 0x80, 0x00);
+    assert_eq!(LINEAR.apply(orange, 230), Rgb8::new(230, 115, 0));
+    assert_eq!(SRGB.apply(orange, 230), Rgb8::new(230, 50, 0));
+
+    // Mid grey is 21.6% of white's light, not 50%.
+    assert_eq!(
+        SRGB.apply(Rgb8::new(0x80, 0x80, 0x80), 230),
+        Rgb8::new(50, 50, 50)
+    );
+}
+
+#[test]
+fn srgb_decode_leaves_the_endpoints_where_they_are() {
+    // Fully-on and fully-off channels are already correct, which is why
+    // primary-colour configurations never showed the fault.
+    assert_eq!(SRGB.apply(Rgb8::BLACK, 230), Rgb8::BLACK);
+    assert_eq!(
+        SRGB.apply(Rgb8::new(0xff, 0xff, 0xff), 230),
+        LINEAR.apply(Rgb8::new(0xff, 0xff, 0xff), 230)
+    );
+    assert_eq!(
+        SRGB.apply(Rgb8::new(0xff, 0x00, 0xff), 230),
+        Rgb8::new(230, 0, 230)
+    );
+}
+
+#[test]
+fn srgb_decode_is_monotonic_so_a_ramp_never_steps_backwards() {
+    let mut previous = 0;
+    for value in 0..=u8::MAX {
+        let duty = SRGB.apply(Rgb8::new(value, 0, 0), 230).r;
+        assert!(duty >= previous, "{value} decoded below {}", value - 1);
+        previous = duty;
+    }
+}
+
+#[test]
+fn a_white_trim_attenuates_only_the_channel_it_names() {
+    let trimmed = LINEAR.with_trim(Rgb8::new(255, 128, 255));
+    assert_eq!(
+        trimmed.apply(Rgb8::new(0xff, 0xff, 0xff), 255),
+        Rgb8::new(255, 128, 255)
+    );
+}
+
+/// A frame that decodes to nothing must also read as dark, or the rail stays
+/// powered for a chain showing black.
+#[test]
+fn visibility_follows_the_profile_that_will_be_written() {
+    let barely_lit = [Rgb8::new(0, 0, 3)];
+    assert!(lighting_output::frame_visible(&barely_lit, LINEAR, 230));
+    assert!(!lighting_output::frame_visible(&barely_lit, SRGB, 230));
 }
 
 #[test]
