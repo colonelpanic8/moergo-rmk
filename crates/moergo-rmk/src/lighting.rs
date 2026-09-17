@@ -35,7 +35,7 @@ use rmk_palettefx::rmk_lighting::{
 mod lighting_output;
 mod lighting_preferences;
 
-use lighting_output::{chain_should_power, frame_visible, limit_channel};
+use lighting_output::{ColorProfile, chain_should_power, frame_visible};
 
 /// Board-wide lighting topology for both binaries. `#[rmk_central]` emits
 /// `crate::LIGHTING_TOPOLOGY` for the central, but the peripheral macro only
@@ -191,6 +191,15 @@ impl BatteryStatusProvider for BoardBatteryProvider {
 /// user-controlled transform and protocol path. Scale rather than clamp so
 /// RMK's global brightness has no dead zone and RGB ratios remain intact.
 const CHANNEL_CEILING: u8 = crate::BOARD_CHANNEL_CEILING;
+
+/// The board-specific transfer function from a requested colour to LED duty.
+/// Applied below every user-controlled transform, so global brightness still
+/// scales the requested colour and the profile still decodes what survives.
+const COLOR_PROFILE: ColorProfile = if crate::BOARD_SRGB_COLOR {
+    ColorProfile::SRGB
+} else {
+    ColorProfile::LINEAR
+};
 const ONE_FRAME: u8 = 0x70;
 const ZERO_FRAME: u8 = 0x40;
 const RESET_BYTES: usize = 48;
@@ -243,8 +252,8 @@ impl Ws2812Chain {
     async fn write(&mut self, frame: &[Rgb8; LEDS_PER_HALF]) -> Result<(), spim::Error> {
         let mut encoded = 0;
         for pixel in frame {
+            let pixel = COLOR_PROFILE.apply(*pixel, CHANNEL_CEILING);
             for channel in [pixel.g, pixel.r, pixel.b] {
-                let channel = limit_channel(channel, CHANNEL_CEILING);
                 for bit in (0..8).rev() {
                     self.buf[encoded] = if channel & (1 << bit) == 0 {
                         ZERO_FRAME
@@ -371,7 +380,7 @@ impl LightingHardware {
     }
 
     pub(crate) async fn write(&mut self, frame: &[Rgb8; LEDS_PER_HALF]) -> Result<(), spim::Error> {
-        let visible = frame_visible(frame, CHANNEL_CEILING);
+        let visible = frame_visible(frame, COLOR_PROFILE, CHANNEL_CEILING);
         if !visible
             && chain_needs_dark_latch()
             && let Err(error) = self.chain.write(frame).await
