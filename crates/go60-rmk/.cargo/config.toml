@@ -5,5 +5,10 @@ runner = "probe-rs run --chip nRF52840_xxAA"
 target = "thumbv7em-none-eabihf"
 
 [env]
-DEFMT_LOG = "info"
+# The Go60 central is the flash-constrained half of the two boards: it carries
+# the Glove80's whole feature set plus two trackpads in the same 0xB6000
+# application partition. At `info` the defmt call sites cost about 7.8KB, which
+# is more slack than the image has. Raising this back to `warn` still links but
+# leaves under 2KB; `info` does not link at all. Glove80 keeps `info`.
+DEFMT_LOG = "error"
 KEYBOARD_TOML_PATH = { value = "keyboard.toml", relative = true }

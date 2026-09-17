@@ -870,6 +870,10 @@ fn package_release(
         let uf2_path = dist.join(&uf2_name);
         let elf_path = dist.join(&elf_name);
         let info = inspect_uf2(&uf2_path, Some(half.family))?;
+        // `cargo check` never links, so a board can drift to the edge of the
+        // application partition without anything saying so. Report the slack
+        // on every bundle so the next change sees it coming.
+        let free = APPLICATION_END - info.end;
         let uf2_hash = sha256(&uf2_path)?;
         let elf_hash = sha256(&elf_path)?;
         artifacts.push(json!({
@@ -884,14 +888,16 @@ fn package_release(
                 "addressEnd": hex(info.end),
             },
             "elf": { "file": elf_name, "sha256": elf_hash },
+            "freeBytes": free,
         }));
         writeln!(checksums, "{uf2_hash}  {uf2_name}")?;
         writeln!(checksums, "{elf_hash}  {elf_name}")?;
         println!(
-            "{}: {}-{}, {}, {}",
+            "{}: {}-{}, {} free, {}, {}",
             half.name,
             hex(info.start),
             hex(info.end),
+            free,
             hex(half.family),
             uf2_hash
         );
