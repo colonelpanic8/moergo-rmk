@@ -8,6 +8,11 @@ include or reach into its sibling's source tree. Keep their RMK feature sets
 aligned, apart from the Go60-only `_no_split_peripheral_battery_service`
 flash-budget switch, and run `just parity-check` for changes to shared services.
 
+`just parity-check` runs `cargo check`, which never links, so it cannot see a
+board run out of flash. Build the bundles (`just firmware-all`) for anything
+that adds code to a shared service; each half's remaining application-partition
+slack is printed per half and recorded as `freeBytes` in `dist/*/manifest.json`.
+
 Board-local code is limited to physical wiring, pins/drivers, device identity,
 and hardware that has no sibling equivalent. Document intentional capability
 differences. Fixes to shared behavior must cover both boards unless the
@@ -18,7 +23,11 @@ The Go60 hardware configuration is transcribed from MoErgo's official
 output ceiling. Its central omits the host-facing split-peripheral GATT battery
 service because that service overflows the application partition; split battery
 state remains available to firmware, while Glove80 exposes both halves to BLE
-hosts.
+hosts. For the same reason its central builds at `DEFMT_LOG = "error"` while
+the Glove80 builds at `info`: the Go60 central carries the Glove80's feature
+set plus both trackpads in the same 0xB6000 partition, and the `info` and
+`debug` call sites cost more flash than it has spare. Both divergences are
+budget, not capability — undo either one and `go60_lh` stops linking.
 
 The current port supports BLE split and the two Cirque Pinnacle trackpads
 (RMK's `cirque_pinnacle` driver, carried through the assembly; wiring in
