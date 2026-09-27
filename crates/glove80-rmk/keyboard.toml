@@ -298,6 +298,10 @@ col_pins = ["P1_06", "P1_04", "P0_02", "P1_07", "P1_05", "P1_03", "P1_01"]
 [lighting]
 topology_revision = 1
 
+[lighting.controls]
+# Each half's powered-only output follows its own USB power.
+powered_only_scope = "local"
+
 [[lighting.zone]]
 id = 1
 name = "per-key"

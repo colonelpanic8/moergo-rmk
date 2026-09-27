@@ -226,6 +226,8 @@ topology_revision = 1
 
 [lighting.controls]
 wake_layers = [3]
+# Each half's powered-only output follows its own USB power.
+powered_only_scope = "local"
 
 [[lighting.zone]]
 id = 1
