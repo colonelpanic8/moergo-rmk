@@ -270,7 +270,7 @@ col_offset = 0
 # Static random BLE address for the split link ("GLV80" + 0x01).
 ble_addr = [0x01, 0x30, 0x38, 0x56, 0x4c, 0xc7]
 # Battery is measured on the internal VDDH/5 channel (ZMK: battery-nrf-vddh).
-battery_adc_pin = "vddh"
+battery = { battery_adc_pin = "vddh" }
 
 [split.central.matrix]
 matrix_type = "normal"
@@ -285,7 +285,7 @@ cols = 7
 row_offset = 0
 col_offset = 7
 ble_addr = [0x02, 0x30, 0x38, 0x56, 0x4c, 0xc7]
-battery_adc_pin = "vddh"
+battery = { battery_adc_pin = "vddh" }
 
 [split.peripheral.matrix]
 matrix_type = "normal"

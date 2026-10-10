@@ -195,7 +195,7 @@ cols = 7
 row_offset = 0
 col_offset = 0
 ble_addr = [0x01, 0x30, 0x36, 0x4f, 0x47, 0xc7]
-battery_adc_pin = "vddh"
+battery = { battery_adc_pin = "vddh" }
 detect_pin = "P1_10"
 serial = [{ instance = "UARTE0", tx_pin = "P1_08", rx_pin = "P1_09", half_duplex = true, direction_pin = "P0_11", baudrate = 921600, timer = "TIMER2", ppi_channels = ["PPI_CH0", "PPI_CH1"] }]
 
@@ -211,7 +211,7 @@ cols = 7
 row_offset = 0
 col_offset = 7
 ble_addr = [0x02, 0x30, 0x36, 0x4f, 0x47, 0xc7]
-battery_adc_pin = "vddh"
+battery = { battery_adc_pin = "vddh" }
 detect_pin = "P1_10"
 serial = [{ instance = "UARTE0", tx_pin = "P1_08", rx_pin = "P1_09", half_duplex = true, direction_pin = "P0_11", baudrate = 921600, timer = "TIMER2", ppi_channels = ["PPI_CH0", "PPI_CH1"] }]
 

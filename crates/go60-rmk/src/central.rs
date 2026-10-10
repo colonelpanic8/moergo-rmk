@@ -71,7 +71,7 @@ mod keyboard_central {
             .with_build_label(build_label.as_str())
     }
 
-    #[register_processor(runnable)]
+    #[register_processor]
     fn lighting_processor() {
         crate::panic_store::stamp(2);
         let mut persisted_scenes = ::rmk::heapless::Vec::<
@@ -93,37 +93,37 @@ mod keyboard_central {
         crate::central_lighting::init(&keymap, engine, p.SPI3, p.P0_27, p.P1_11)
     }
 
-    #[register_processor(runnable)]
+    #[register_processor]
     fn lighting_rynk_adapter() {
         crate::panic_store::stamp(3);
         crate::central_lighting::rynk_adapter()
     }
 
-    #[register_processor(runnable)]
+    #[register_processor]
     fn lighting_replication() {
         crate::panic_store::stamp(4);
         crate::central_lighting::replication()
     }
 
-    #[register_processor(runnable)]
+    #[register_processor]
     fn remote_frame_bridge() {
         crate::panic_store::stamp(5);
         crate::central_lighting::remote_frame_bridge()
     }
 
-    #[register_processor(runnable)]
+    #[register_processor]
     fn remote_boot_dispatcher() {
         crate::panic_store::stamp(6);
         crate::central_lighting::RemoteBootDispatcher
     }
 
-    #[register_processor(runnable)]
+    #[register_processor]
     fn split_transport_lighting_nudge() {
         crate::panic_store::stamp(7);
         crate::central_lighting::SplitTransportLightingNudge
     }
 
-    #[register_processor(runnable)]
+    #[register_processor]
     fn trackpad_device() {
         crate::panic_store::stamp(8);
         crate::trackpad::init(
@@ -137,43 +137,39 @@ mod keyboard_central {
         )
     }
 
-    #[register_processor(event)]
+    #[register_processor]
     fn left_pointing_processor() {
         crate::trackpad::processor(&keymap, crate::trackpad::LEFT_DEVICE_ID)
     }
 
-    #[register_processor(event)]
+    #[register_processor]
     fn right_pointing_processor() {
         crate::trackpad::processor(&keymap, crate::trackpad::RIGHT_DEVICE_ID)
     }
 
-    #[register_processor(event)]
+    #[register_processor]
     fn trackpad_layer_modes() {
-        // Seeding from storage here is what makes the pads' behavior
-        // configuration rather than firmware: nothing about them is decided
-        // until this is read back.
-        ::rmk::input_device::pointing_config::init(storage.read_pointing_config().await).await;
         ::rmk::input_device::pointing_config::PointingLayerModes
     }
 
-    #[register_processor(event)]
+    #[register_processor]
     fn magic_key_actions() {
         crate::remote_boot::MagicKeyActions::new()
     }
 
-    #[register_processor(event)]
+    #[register_processor]
     fn battery_lighting_state() {
         crate::central_lighting::BatteryLightingState
     }
 
     /// Report this half's VBUS-derived charge state; without it no charge
     /// state is ever produced and `charge`-gated lighting rules never fire.
-    #[register_processor(runnable)]
+    #[register_processor]
     fn lighting_power_monitor() {
         crate::lighting::power_monitor(p.PWM0, p.P1_15)
     }
 
-    #[register_processor(event)]
+    #[register_processor]
     fn reactive_key_hits() {
         crate::lighting::ReactiveKeyHits::central()
     }

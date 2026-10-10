@@ -17,6 +17,7 @@ use moergo_config::{
     BehaviorSnapshot, EffectParams, EffectsConfig, LightingConfig, LightingSnapshot,
     OutputModeConfig, ParamSpec, RuntimeConfig, Snapshot,
 };
+use rynk::rmk_types::keyboard_macros::MacroOp;
 use rynk::rmk_types::morse::MorseProfileName;
 use rynk::rmk_types::pointing::PointingMode;
 use rynk::rmk_types::protocol::rynk::{
@@ -557,8 +558,6 @@ fn params_unsupported(error: &RynkHostError) -> bool {
 /// Firmware without these commands answers `UnknownCmd`, which reads as "this
 /// keyboard has no such table" rather than as a failure, so an older device
 /// still pulls and diffs its keymap.
-/// One macro chunk, which the protocol fixes for both directions.
-const MACRO_CHUNK: usize = rynk::rmk_types::constants::MACRO_DATA_SIZE;
 
 async fn read_behaviors(client: &Client) -> Result<BehaviorSnapshot> {
     let capabilities = client.get_capabilities().await?;
@@ -636,8 +635,8 @@ async fn read_behaviors(client: &Client) -> Result<BehaviorSnapshot> {
             None
         },
         combos,
-        macros: if capabilities.macro_space_size > 0 {
-            Some(read_macro_space(client).await?)
+        macros: if capabilities.max_macros > 0 {
+            Some(read_macros(client, capabilities.max_macros).await?)
         } else {
             None
         },
@@ -746,30 +745,22 @@ async fn read_all_forks(client: &Client) -> Result<Vec<rynk::rmk_types::fork::Fo
     Ok(forks)
 }
 
-/// Read macro space by walking it a chunk at a time.
-///
-/// Chunks come back full size and zero-filled past the end, so there is no
-/// short read to stop on; the walk stops when a chunk adds nothing but padding.
-async fn read_macro_space(client: &Client) -> Result<Vec<u8>> {
-    let mut space = Vec::new();
-    let mut offset = 0u16;
-    loop {
-        let chunk = client.get_macro(offset).await?;
-        if chunk.data.is_empty() || chunk.data.iter().all(|byte| *byte == 0) {
-            break;
-        }
-        space.extend_from_slice(&chunk.data);
-        offset = offset
-            .checked_add(u16::try_from(chunk.data.len()).context("macro chunk too large")?)
-            .context("macro space offset overflowed")?;
+/// Read every macro slot, dropping the unused tail; interior empty slots keep
+/// their place because `TriggerMacro` addresses macros by index.
+async fn read_macros(client: &Client, max_macros: u8) -> Result<Vec<Vec<MacroOp>>> {
+    let mut macros = Vec::new();
+    for index in 0..max_macros {
+        macros.push(
+            client
+                .read_macro(index)
+                .await
+                .with_context(|| format!("could not read macro {index}"))?,
+        );
     }
-    // Trailing padding is not part of any sequence, but retain the final zero:
-    // it terminates the last encoded macro and belongs to the logical macro
-    // space compared against a configuration snapshot.
-    while space.ends_with(&[0, 0]) {
-        space.pop();
+    while macros.last().is_some_and(Vec::is_empty) {
+        macros.pop();
     }
-    Ok(space)
+    Ok(macros)
 }
 
 /// Make a snapshot speak for every behavior table, so one it did not mention
@@ -804,7 +795,6 @@ async fn apply_behaviors(
     client: &Client,
     desired: &BehaviorSnapshot,
     before: &BehaviorSnapshot,
-    macro_chunk: u16,
 ) -> Result<()> {
     if let Some(config) = desired.config {
         if before.config != Some(config) {
@@ -975,35 +965,20 @@ async fn apply_behaviors(
         }
     }
     if let Some(macros) = &desired.macros {
-        if before.macros.as_ref() != Some(macros) {
-            write_macro_space(client, macros, macro_chunk).await?;
+        let present = before.macros.as_deref().unwrap_or_default();
+        // Clear stale slots past the file too, so no old macro lingers behind a
+        // `TriggerMacro` index the file no longer defines.
+        for index in 0..macros.len().max(present.len()) {
+            let wanted = macros.get(index).map_or(&[][..], Vec::as_slice);
+            if present.get(index).map_or(&[][..], Vec::as_slice) != wanted {
+                let slot =
+                    u8::try_from(index).context("more macros than the protocol can address")?;
+                client
+                    .write_macro(slot, wanted)
+                    .await
+                    .with_context(|| format!("could not write macro {slot}"))?;
+            }
         }
-    }
-    Ok(())
-}
-
-async fn write_macro_space(client: &Client, space: &[u8], macro_chunk: u16) -> Result<()> {
-    // Chunk by what the device advertises, not by this build's constant. The two
-    // are generated differently on purpose — a host's `MACRO_DATA_SIZE` is the
-    // protocol ceiling so it can talk to any firmware, while a firmware's is its
-    // own `protocol_macro_chunk_size`. Sending a ceiling-sized chunk to firmware
-    // built with a smaller one overruns the vec it decodes into, and the write
-    // comes back as a bare `Malformed`.
-    let chunk_size = usize::from(macro_chunk).clamp(1, MACRO_CHUNK);
-    // One extra terminator so a shorter sequence set does not leave the tail
-    // of a longer one behind to be parsed as another macro.
-    let mut payload = space.to_vec();
-    payload.push(0);
-    for (index, chunk) in payload.chunks(chunk_size).enumerate() {
-        let offset = u16::try_from(index * chunk_size).context("macro space is too large")?;
-        let data = rynk::rmk_types::protocol::rynk::MacroData {
-            data: heapless::Vec::from_slice(chunk)
-                .map_err(|_| anyhow::anyhow!("macro chunk exceeds the protocol's chunk size"))?,
-        };
-        client
-            .set_macro(offset, data)
-            .await
-            .context("could not write macro space")?;
     }
     Ok(())
 }
@@ -1365,13 +1340,7 @@ async fn apply_snapshot(client: &Client, desired: &Snapshot, before: &Snapshot) 
     // Before the keymap: a cell holding `TD(n)` or `TriggerMacro(n)` addresses
     // a table slot by index, so the tables have to be in place before any key
     // can point at them.
-    apply_behaviors(
-        client,
-        &desired.behaviors,
-        &before.behaviors,
-        capabilities.macro_chunk_size,
-    )
-    .await?;
+    apply_behaviors(client, &desired.behaviors, &before.behaviors).await?;
 
     // A source file owns the layers it lists. Fixed-capacity trailing layers
     // remain untouched rather than being destructively cleared, which is why this
