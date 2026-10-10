@@ -20,7 +20,7 @@ const UF2_MAGIC_END: u32 = 0x0ab1_6f30;
 const UF2_FLAG_FAMILY_ID: u32 = 0x0000_2000;
 const UF2_PAYLOAD_SIZE: usize = 256;
 const APPLICATION_START: u32 = 0x0002_6000;
-const APPLICATION_END: u32 = 0x000d_c000;
+const APPLICATION_END: u32 = 0x000d_e000;
 const GO60_BUILD_ROOT: &str = "/tmp/moergo-rmk-go60-source";
 const GO60_BUILD_CONFIG_DIR: &str = "/tmp/moergo-rmk-go60-config";
 const GO60_CARGO_HOME: &str = "/tmp/moergo-rmk-go60-cargo";
@@ -271,7 +271,6 @@ fn dist(root: &Path) -> Result<()> {
     let firmware_dir = root.join("crates/glove80-rmk");
     let config_path = effective_config_path(&firmware_dir);
     let config_digests = config_profile::digests(&config_path)?;
-    let build_hash_seed = firmware_build_hash_seed(&source_commit, &rmk_commit, &config_digests);
     let rustflags = reproducible_rustflags(root, &config_path);
     // `--locked` refuses a stale lockfile instead of silently rewriting it:
     // that rewrite dirties the tree mid-run, and the next bundle then fails
@@ -283,7 +282,6 @@ fn dist(root: &Path) -> Result<()> {
             &["build", "--locked", "--release", "--bin", binary],
             &[
                 ("MOERGO_RMK_GIT_VERSION", &rmk_version),
-                ("RMK_BUILD_HASH_SEED", &build_hash_seed),
                 ("RUSTFLAGS", &rustflags),
             ],
         )?;
@@ -353,7 +351,6 @@ fn dist_go60(root: &Path) -> Result<()> {
     let firmware_dir = root.join("crates/go60-rmk");
     let config_path = effective_config_path(&firmware_dir);
     let config_digests = config_profile::digests(&config_path)?;
-    let build_hash_seed = firmware_build_hash_seed(&source_commit, &rmk_commit, &config_digests);
     let build = CanonicalGo60Build::prepare(root, &config_path)?;
     let build_firmware_dir = build.root.join("crates/go60-rmk");
     let rustflags = reproducible_rustflags(&build.root, &build.config_path);
@@ -369,7 +366,6 @@ fn dist_go60(root: &Path) -> Result<()> {
                 ("GO60_GIT_COMMIT", &source_commit),
                 ("GO60_GIT_DIRTY", source_dirty),
                 ("MOERGO_RMK_GIT_VERSION", &rmk_version),
-                ("RMK_BUILD_HASH_SEED", &build_hash_seed),
                 ("KEYBOARD_TOML_PATH", build.config_path_str()),
                 ("CARGO_HOME", GO60_CARGO_HOME),
                 ("RUSTFLAGS", &rustflags),
@@ -450,17 +446,6 @@ fn output_dir(root: &Path, default: &str) -> PathBuf {
             }
         })
         .unwrap_or_else(|| root.join(default))
-}
-
-fn firmware_build_hash_seed(
-    source_commit: &str,
-    rmk_commit: &str,
-    config_digests: &config_profile::Digests,
-) -> String {
-    format!(
-        "moergo-rmk:{source_commit}:rmk:{rmk_commit}:platform:{}",
-        config_digests.platform_profile
-    )
 }
 
 struct CanonicalGo60Build {

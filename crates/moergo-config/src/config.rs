@@ -7,6 +7,7 @@ use rynk::rmk_types::action::{Action, KeyAction};
 use rynk::rmk_types::auto_mouse::AutoMouseLayerConfig as WireAutoMouseLayerConfig;
 use rynk::rmk_types::ble::BleState as WireBleState;
 use rynk::rmk_types::combo::{Combo, ComboDefinition, MatrixPosition, PositionCombo};
+use rynk::rmk_types::keyboard_macros::MacroOp;
 use rynk::rmk_types::morse::{Morse, MorseMode, MorseProfile, MORSE_PROFILE_NAME_MAX_LEN};
 use rynk::rmk_types::pointing::{
     CaretConfig as WireCaretConfig, CursorConfig as WireCursorConfig,
@@ -853,10 +854,24 @@ pub struct MacroConfig {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(tag = "operation", rename_all = "lowercase")]
 pub enum MacroOperationConfig {
-    Tap { keycode: String },
-    Down { keycode: String },
-    Up { keycode: String },
-    Delay { ms: u16 },
+    Tap {
+        keycode: String,
+    },
+    Down {
+        keycode: String,
+    },
+    Up {
+        keycode: String,
+    },
+    Delay {
+        ms: u16,
+    },
+    /// Type one ASCII character with its own shift state.
+    Char {
+        character: char,
+    },
+    /// Ops before this run on press, ops after it on release.
+    PauseForRelease,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -1527,6 +1542,8 @@ impl PointingModeConfig {
                 let cursor = WireCursorConfig {
                     multiplier_x,
                     multiplier_y,
+                    divisor_x: 1,
+                    divisor_y: 1,
                     invert_x,
                     invert_y,
                 };
@@ -1621,6 +1638,8 @@ impl PointingModeConfig {
                 cursor: WireCursorConfig {
                     multiplier_x,
                     multiplier_y,
+                    divisor_x: 1,
+                    divisor_y: 1,
                     invert_x,
                     invert_y,
                 },
@@ -1637,6 +1656,8 @@ impl PointingModeConfig {
                 cursor: WireCursorConfig {
                     multiplier_x,
                     multiplier_y,
+                    divisor_x: 1,
+                    divisor_y: 1,
                     invert_x,
                     invert_y,
                 },
@@ -1646,6 +1667,19 @@ impl PointingModeConfig {
     }
 
     fn from_wire(mode: PointingMode) -> Result<Self> {
+        if let PointingMode::Cursor(cursor)
+        | PointingMode::CursorRemap(WireCursorRemapConfig { cursor, .. })
+        | PointingMode::Drag(WireDragConfig { cursor, .. })
+        | PointingMode::Press(WirePressConfig { cursor, .. }) = mode
+        {
+            if (cursor.divisor_x, cursor.divisor_y) != (1, 1) {
+                bail!(
+                    "cursor divisors {}/{} are not expressible in this configuration",
+                    cursor.divisor_x,
+                    cursor.divisor_y
+                );
+            }
+        }
         Ok(match mode {
             PointingMode::Cursor(config) => Self::Cursor {
                 multiplier_x: config.multiplier_x,
@@ -1804,9 +1838,8 @@ pub struct BehaviorSnapshot {
     pub auto_mouse_layers: Option<Vec<WireAutoMouseLayerConfig>>,
     pub morses: Option<Vec<rynk::rmk_types::morse::Morse>>,
     pub combos: Option<Vec<ComboDefinition>>,
-    /// Macro space as the firmware stores it: the sequences concatenated, each
-    /// ended by its own terminator, which is what `TriggerMacro` indexes into.
-    pub macros: Option<Vec<u8>>,
+    /// One op list per macro slot, which is what `TriggerMacro` indexes into.
+    pub macros: Option<Vec<Vec<MacroOp>>>,
     /// Forks: one key's output swapped while a modifier is held. Unlike the
     /// tables above, a keymap cell does not address these by index — a fork
     /// matches on the action it replaces.
@@ -2187,15 +2220,15 @@ impl RuntimeConfig {
                     .transpose()?,
                 macros: (!self.macros.is_empty())
                     .then(|| {
-                        let mut space = Vec::new();
-                        for (index, entry) in self.macros.iter().enumerate() {
-                            space.extend(
-                                entry.to_wire().with_context(|| {
-                                    format!("[[macro]] {index} ({})", entry.name)
-                                })?,
-                            );
-                        }
-                        Ok::<_, anyhow::Error>(space)
+                        self.macros
+                            .iter()
+                            .enumerate()
+                            .map(|(index, entry)| {
+                                entry
+                                    .to_wire()
+                                    .with_context(|| format!("[[macro]] {index} ({})", entry.name))
+                            })
+                            .collect::<Result<Vec<_>>>()
                     })
                     .transpose()?,
             },
@@ -2784,44 +2817,68 @@ impl ComboConfig {
 }
 
 impl MacroConfig {
-    /// One macro's bytes, terminator included.
-    pub(crate) fn to_wire(&self) -> Result<Vec<u8>> {
-        let mut bytes = Vec::new();
-        for operation in &self.operations {
-            let (tag, keycode) = match operation {
-                MacroOperationConfig::Tap { keycode } => (0x01, Some(keycode)),
-                MacroOperationConfig::Down { keycode } => (0x02, Some(keycode)),
-                MacroOperationConfig::Up { keycode } => (0x03, Some(keycode)),
-                MacroOperationConfig::Delay { ms } => {
-                    // Vial packs a delay as two bytes that are never zero.
-                    bytes.extend_from_slice(&[
-                        0x01,
-                        0x04,
-                        (ms % 255) as u8 + 1,
-                        (ms / 255) as u8 + 1,
-                    ]);
-                    continue;
-                }
-            };
-            let Some(keycode) = keycode else { continue };
-            let code = crate::keycodes::parse_keycode(keycode)?;
-            // A modified keycode has no one-byte form, so the modifiers are
-            // pressed around the key instead.
-            let modifiers = modifier_hid_keys((code >> 8) as u8);
-            for modifier in &modifiers {
-                bytes.extend_from_slice(&[0x01, 0x02, *modifier]);
-            }
-            bytes.extend_from_slice(&[0x01, tag, (code & 0xff) as u8]);
-            for modifier in modifiers.iter().rev() {
-                bytes.extend_from_slice(&[0x01, 0x03, *modifier]);
-            }
-        }
-        bytes.push(0x00);
-        Ok(bytes)
+    /// One macro's ops.
+    pub(crate) fn to_wire(&self) -> Result<Vec<MacroOp>> {
+        self.operations
+            .iter()
+            .map(|operation| {
+                Ok(match operation {
+                    MacroOperationConfig::Tap { keycode } => {
+                        MacroOp::Tap(action_from_name(keycode)?)
+                    }
+                    MacroOperationConfig::Down { keycode } => {
+                        MacroOp::Press(action_from_name(keycode)?)
+                    }
+                    MacroOperationConfig::Up { keycode } => {
+                        MacroOp::Release(action_from_name(keycode)?)
+                    }
+                    MacroOperationConfig::Delay { ms } => MacroOp::Delay(*ms),
+                    MacroOperationConfig::Char { character } => MacroOp::Char(
+                        u8::try_from(*character)
+                            .ok()
+                            .filter(u8::is_ascii)
+                            .with_context(|| format!("'{character}' is not an ASCII character"))?,
+                    ),
+                    MacroOperationConfig::PauseForRelease => MacroOp::PauseForRelease,
+                })
+            })
+            .collect()
     }
 
-    /// Split macro space back into one entry per terminator.
-    pub(crate) fn all_from_wire(space: &[u8]) -> Vec<Self> {
+    /// One entry per macro slot; an empty slot keeps its place so `TriggerMacro`
+    /// indices stay stable.
+    pub(crate) fn all_from_wire(slots: &[Vec<MacroOp>]) -> Vec<Self> {
+        slots
+            .iter()
+            .enumerate()
+            .map(|(index, ops)| Self {
+                name: format!("macro {index}"),
+                operations: ops
+                    .iter()
+                    .map(|op| match *op {
+                        MacroOp::Tap(action) => MacroOperationConfig::Tap {
+                            keycode: action_name(action),
+                        },
+                        MacroOp::Press(action) => MacroOperationConfig::Down {
+                            keycode: action_name(action),
+                        },
+                        MacroOp::Release(action) => MacroOperationConfig::Up {
+                            keycode: action_name(action),
+                        },
+                        MacroOp::Delay(ms) => MacroOperationConfig::Delay { ms },
+                        MacroOp::Char(byte) => MacroOperationConfig::Char {
+                            character: char::from(byte),
+                        },
+                        MacroOp::PauseForRelease => MacroOperationConfig::PauseForRelease,
+                    })
+                    .collect(),
+            })
+            .collect()
+    }
+
+    /// Split Vial-encoded macro space, as the ZMK importer lowers it, back into
+    /// one entry per terminator.
+    pub(crate) fn all_from_vial_bytes(space: &[u8]) -> Vec<Self> {
         let mut out = Vec::new();
         for (index, sequence) in space.split(|byte| *byte == 0).enumerate() {
             if sequence.is_empty() {
@@ -2856,23 +2913,6 @@ impl MacroConfig {
         }
         out
     }
-}
-
-/// The HID keycodes for a VIA packed-modifier byte, in a stable order.
-fn modifier_hid_keys(packed: u8) -> Vec<u8> {
-    const MODIFIERS: [(u8, u8); 4] = [
-        (0b0000_0001, 0xe0), // Ctrl
-        (0b0000_0010, 0xe1), // Shift
-        (0b0000_0100, 0xe2), // Alt
-        (0b0000_1000, 0xe3), // Gui
-    ];
-    // Bit 4 selects the right-hand set, which sits four keycodes further on.
-    let right = if packed & 0b0001_0000 != 0 { 4 } else { 0 };
-    MODIFIERS
-        .iter()
-        .filter(|(bit, _)| packed & bit != 0)
-        .map(|(_, key)| key + right)
-        .collect()
 }
 
 impl LightingConfig {
@@ -3258,11 +3298,15 @@ pub fn differences(desired: &Snapshot, live: &Snapshot) -> Vec<String> {
     }
     if let Some(wanted) = &desired.behaviors.macros {
         let present = live.behaviors.macros.as_deref().unwrap_or_default();
-        // Macro space is zero-filled past the end, so compare only as far as
-        // the file describes.
-        if present.len() < wanted.len() || present[..wanted.len()] != wanted[..] {
-            result.push(format!("macro space: {} byte(s) differ", wanted.len()));
+        for (index, ops) in wanted.iter().enumerate() {
+            if present
+                .get(index)
+                .map_or(!ops.is_empty(), |present| present != ops)
+            {
+                result.push(format!("macro {index}: file differs from keyboard"));
+            }
         }
+        report_surplus(&mut result, "macro", wanted.len(), present, Vec::is_empty);
     }
     if let Some(wanted) = &desired.pointing {
         let present = live.pointing.as_ref();

@@ -237,7 +237,7 @@ pub fn import_moergo_layout(text: &str) -> Result<ImportedLayout> {
             )
         })
         .collect();
-    let macros = crate::MacroConfig::all_from_wire(&lowering.macros().concat());
+    let macros = crate::MacroConfig::all_from_vial_bytes(&lowering.macros().concat());
     let forks = lowering
         .forks()
         .iter()

@@ -25,7 +25,7 @@ service because that service overflows the application partition; split battery
 state remains available to firmware, while Glove80 exposes both halves to BLE
 hosts. For the same reason its central builds at `DEFMT_LOG = "error"` while
 the Glove80 builds at `info`: the Go60 central carries the Glove80's feature
-set plus both trackpads in the same 0xB6000 partition, and the `info` and
+set plus both trackpads in the same 0xB8000 partition, and the `info` and
 `debug` call sites cost more flash than it has spare. Both divergences are
 budget, not capability — undo either one and `go60_lh` stops linking.
 
