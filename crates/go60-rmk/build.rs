@@ -19,6 +19,7 @@ fn link_script_setup() {
     println!("cargo:rustc-link-search={}", out.display());
     println!("cargo:rerun-if-changed=memory.x");
     println!("cargo:rustc-link-arg=--nmagic");
+    println!("cargo:rustc-link-arg=--icf=all");
     println!("cargo:rustc-link-arg=-Tlink.x");
     println!("cargo:rustc-link-arg=-Tdefmt.x");
 }
