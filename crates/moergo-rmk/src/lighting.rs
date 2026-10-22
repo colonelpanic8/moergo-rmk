@@ -12,7 +12,7 @@ use embassy_sync::blocking_mutex::Mutex as BlockingMutex;
 use embassy_time::{Duration, Instant, Timer};
 use rmk::core_traits::Runnable;
 use rmk::event::{
-    EventSubscriber, KeyboardEvent, KeyboardEventPos, LayerChangeEvent, MaintenanceModeEvent,
+    EventSubscriber, KeyboardEvent, KeyboardEventSource, LayerChangeEvent, MaintenanceModeEvent,
     SleepStateEvent, SubscribableEvent,
 };
 use rmk::lighting::topology::MatrixPosition;
@@ -505,14 +505,8 @@ pub struct Preferences {
     params: rmk::heapless::Vec<LightingExtensionParamsRecord, { Effect::<1>::NAMES.len() }>,
 }
 
-pub async fn load_preferences<
-    F: embedded_storage_async::nor_flash::NorFlash,
-    const R: usize,
-    const C: usize,
-    const L: usize,
-    const E: usize,
->(
-    storage: &mut Storage<F, R, C, L, E>,
+pub async fn load_preferences<F: embedded_storage_async::nor_flash::NorFlash>(
+    storage: &mut Storage<F>,
 ) -> Preferences {
     let mut preferences = Preferences {
         extension: storage.read_lighting_extension_state().await,
@@ -690,7 +684,7 @@ impl ReactiveKeyHits {
         if !event.pressed {
             return;
         }
-        let KeyboardEventPos::Key(pos) = event.pos else {
+        let KeyboardEventSource::Key(pos) = event.source else {
             return;
         };
         let (Some(row), Some(col)) = (

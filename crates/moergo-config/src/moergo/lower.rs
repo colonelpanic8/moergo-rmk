@@ -375,6 +375,7 @@ impl<'a> Lowering<'a> {
             match_none: StateBits::default(),
             kept_modifiers: kept,
             bindable: true,
+            layers: u32::MAX,
         };
         if !self.forks.contains(&fork) {
             self.forks.push(fork);

@@ -111,10 +111,8 @@ pub struct BehaviorSnapshot {
     pub auto_mouse_layers: Option<Vec<AutoMouseLayerConfig>>,
     pub morses: Option<Vec<Morse>>,
     pub combos: Option<Vec<ComboDefinition>>,
-    /// Macro space exactly as the firmware stores it: the sequences
-    /// concatenated, each closed by its own terminator, which is what
-    /// `TriggerMacro` indexes into.
-    pub macros: Option<Vec<u8>>,
+    /// Macro operations by stable slot index.
+    pub macros: Option<Vec<Vec<rynk::rmk_types::keyboard_macros::MacroOp>>>,
     /// Forks: one key's output swapped while a modifier is held. Not addressed
     /// by index from a keymap cell — a fork matches the action it replaces.
     pub forks: Option<Vec<Fork>>,
