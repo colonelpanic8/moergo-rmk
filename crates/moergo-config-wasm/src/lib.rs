@@ -304,3 +304,14 @@ pub fn validate_config(text: &str) -> Result<ConfigFormat, JsValue> {
     parse_text(text, format).map_err(js_error)?;
     Ok(format)
 }
+
+/// Bytes a macro occupies in RMK's shared storage buffer, including slot framing.
+#[wasm_bindgen]
+pub fn macro_storage_size(
+    ops: Vec<rynk::rmk_types::keyboard_macros::MacroOp>,
+) -> Result<usize, JsValue> {
+    let encoded = rynk::rmk_types::keyboard_macros::Macro::from_slice(&ops)
+        .map_err(|_| JsError::new("macro exceeds the protocol capacity"))?;
+    let length = encoded.as_bytes().len();
+    Ok(length + if length < 0x80 { 1 } else { 2 })
+}
