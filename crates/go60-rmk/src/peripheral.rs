@@ -26,7 +26,7 @@ use rmk::macros::rmk_peripheral;
 
 #[rmk_peripheral(id = 0)]
 mod keyboard_peripheral {
-    #[register_processor(runnable)]
+    #[register_processor]
     fn lighting_processor() {
         crate::panic_store::boot_mark();
         crate::lighting::init_peripheral(p.SPI3, p.P0_27, p.P1_11)
@@ -34,12 +34,12 @@ mod keyboard_peripheral {
 
     /// Render the native priority layer edge without waiting for bulk
     /// application traffic.
-    #[register_processor(event)]
+    #[register_processor]
     fn fast_layer_lighting() {
         crate::lighting::FastPeripheralLayerLighting
     }
 
-    #[register_processor(runnable)]
+    #[register_processor]
     fn trackpad_device() {
         crate::trackpad::init(
             crate::trackpad::RIGHT_DEVICE_ID,
@@ -52,22 +52,22 @@ mod keyboard_peripheral {
         )
     }
 
-    #[register_processor(runnable)]
+    #[register_processor]
     fn lighting_replication() {
         crate::lighting::peripheral_replication()
     }
 
-    #[register_processor(runnable)]
+    #[register_processor]
     fn lighting_replication_worker() {
         crate::lighting::peripheral_lighting_worker()
     }
 
-    #[register_processor(runnable)]
+    #[register_processor]
     fn lighting_power_monitor() {
         crate::lighting::power_monitor(p.PWM0, p.P1_15)
     }
 
-    #[register_processor(event)]
+    #[register_processor]
     fn reactive_key_hits() {
         crate::lighting::ReactiveKeyHits::peripheral()
     }

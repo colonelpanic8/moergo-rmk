@@ -68,7 +68,7 @@ mod keyboard_central {
 
     /// Central authority and left-half renderer for the board-wide lighting
     /// model. The peripheral receives declarative snapshots separately.
-    #[register_processor(runnable)]
+    #[register_processor]
     fn lighting_processor() {
         let keymap_ref = &keymap;
         let mut persisted_scenes = ::rmk::heapless::Vec::<
@@ -92,58 +92,58 @@ mod keyboard_central {
 
     /// Type-erased Rynk requests are translated into the standard engine's
     /// authoritative command mailbox here.
-    #[register_processor(runnable)]
+    #[register_processor]
     fn lighting_rynk_adapter() {
         crate::central_lighting::rynk_adapter()
     }
 
     /// Replicate semantic state on mutations and reconnect; animation frames
     /// never traverse the split link.
-    #[register_processor(runnable)]
+    #[register_processor]
     fn lighting_replication() {
         crate::central_lighting::replication()
     }
 
-    #[register_processor(runnable)]
+    #[register_processor]
     fn remote_frame_bridge() {
         crate::central_lighting::remote_frame_bridge()
     }
 
     /// Forward the physical right-half bootloader action.
-    #[register_processor(runnable)]
+    #[register_processor]
     fn remote_boot_dispatcher() {
         crate::central_lighting::RemoteBootDispatcher
     }
 
     /// Handle Magic-layer board controls: wake/toggle master lighting and
     /// route the right-half UF2 action to the peripheral.
-    #[register_processor(event)]
+    #[register_processor]
     fn magic_key_actions() {
         crate::remote_boot::MagicKeyActions::new()
     }
 
     /// Keep the information-view battery bars synchronized with both halves.
-    #[register_processor(event)]
+    #[register_processor]
     fn battery_lighting_state() {
         crate::central_lighting::BatteryLightingState
     }
 
     /// Refresh the Magic+R status LED immediately after its gate changes.
-    #[register_processor(event)]
+    #[register_processor]
     fn maintenance_lighting_state() {
         crate::lighting::MaintenanceLightingState
     }
 
     /// Report this half's VBUS-derived charge state; without it no charge
     /// state is ever produced and `charge`-gated lighting rules never fire.
-    #[register_processor(runnable)]
+    #[register_processor]
     fn lighting_power_monitor() {
         crate::lighting::power_monitor(p.PWM0, p.P1_15)
     }
 
     /// Feed every key press to the local PaletteFx engine and mirror left-half
     /// hits to the peripheral, allowing spatial key effects to span the seam.
-    #[register_processor(event)]
+    #[register_processor]
     fn reactive_key_hits() {
         crate::lighting::ReactiveKeyHits::central()
     }
