@@ -971,10 +971,35 @@ async fn write_macro_space(
     before: &[Vec<MacroOp>],
 ) -> Result<()> {
     let capabilities = client.get_capabilities().await?;
-    if macros.len() > usize::from(capabilities.max_macros) {
+    if !capabilities.macros_writable {
+        bail!("device macros are read-only");
+    }
+    let capacity = usize::from(capabilities.max_macros);
+    if macros.len() > capacity {
         bail!("configuration exceeds the device's macro slot capacity");
     }
-    for index in 0..macros.len().max(before.len()) {
+    let sizes = macros
+        .iter()
+        .map(|ops| moergo_config::macro_storage_size(ops))
+        .collect::<Result<Vec<_>>>()?;
+    if sizes.iter().sum::<usize>() + capacity - macros.len()
+        > usize::from(capabilities.macro_space_size)
+    {
+        bail!("configuration exceeds the device's macro storage capacity");
+    }
+    let mut order = (0..macros.len().max(before.len()))
+        .map(|index| {
+            let old = moergo_config::macro_storage_size(
+                before.get(index).map(Vec::as_slice).unwrap_or_default(),
+            )?;
+            Ok((
+                index,
+                *sizes.get(index).unwrap_or(&1) as isize - old as isize,
+            ))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    order.sort_by_key(|(_, growth)| *growth);
+    for (index, _) in order {
         let wanted = macros.get(index).map(Vec::as_slice).unwrap_or_default();
         if before.get(index).map(Vec::as_slice) == Some(wanted) {
             continue;

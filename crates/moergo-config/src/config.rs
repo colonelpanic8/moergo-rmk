@@ -2839,6 +2839,14 @@ impl ComboConfig {
     }
 }
 
+/// Bytes occupied by one macro, including its slot framing.
+pub fn macro_storage_size(ops: &[MacroOp]) -> Result<usize> {
+    let encoded = rynk::rmk_types::keyboard_macros::Macro::from_slice(ops)
+        .map_err(|_| anyhow::anyhow!("macro exceeds the protocol capacity"))?;
+    let length = encoded.as_bytes().len();
+    Ok(length + if length < 0x80 { 1 } else { 2 })
+}
+
 impl MacroConfig {
     pub(crate) fn to_wire(&self) -> Result<Vec<MacroOp>> {
         self.operations
