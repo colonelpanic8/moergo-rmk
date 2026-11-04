@@ -5,7 +5,8 @@
 mod trackpad;
 
 pub const BOARD_LEDS_PER_HALF: usize = 30;
-pub const BOARD_SCENE_CAPACITY: usize = 80;
+pub const BOARD_SCENE_CAPACITY: usize = 160;
+pub const BOARD_RULE_CAPACITY: usize = 200;
 pub const BOARD_CHANNEL_CEILING: u8 = 102;
 /// Treat configured colours as sRGB code values rather than raw LED duty.
 /// On, mid-tones land where a display puts them; configurations authored by

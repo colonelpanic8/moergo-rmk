@@ -34,7 +34,7 @@ use rmk::types::protocol::rynk::{LightingLayerPolicy, LightingRule, LightingScen
 
 use crate::lighting::{
     BOOTLOADER_TAG, COMMAND_CAPACITY, CORE_MAILBOX, Engine, HalfOutput, LightingHardware,
-    OVERLAY_CAPACITY, REPLICA_SLOT, SCENE_CAPACITY,
+    OVERLAY_CAPACITY, REPLICA_SLOT, RULE_CAPACITY, SCENE_CAPACITY,
 };
 
 static RYNK_MAILBOX: RynkLightingMailbox = RynkLightingMailbox::new();
@@ -361,8 +361,13 @@ pub fn init<'keymap, 'data>(
     LightingProcessor::new(service, output, &CORE_MAILBOX)
 }
 
-pub fn rynk_adapter()
--> StandardRynkLightingAdapter<'static, OVERLAY_CAPACITY, COMMAND_CAPACITY, SCENE_CAPACITY> {
+pub fn rynk_adapter() -> StandardRynkLightingAdapter<
+    'static,
+    OVERLAY_CAPACITY,
+    COMMAND_CAPACITY,
+    SCENE_CAPACITY,
+    RULE_CAPACITY,
+> {
     StandardRynkLightingAdapter::new(&RYNK_MAILBOX, &CORE_MAILBOX, crate::LIGHTING_TOPOLOGY)
 }
 
@@ -377,8 +382,8 @@ pub const fn rynk_controller() -> RynkLightingController<'static> {
         OVERLAY_CAPACITY as u16,
     )
     .with_scene_capacity(SCENE_CAPACITY as u16)
-    .with_runtime_conditional_scene_capacity(SCENE_CAPACITY as u16)
-    .with_conditional_scenes(&crate::LIGHTING_CONDITIONAL_SCENE_CELLS)
+    .with_runtime_conditional_scene_capacity(RULE_CAPACITY as u16)
+    .with_conditional_scenes(crate::LIGHTING_CONDITIONAL_RULES)
     .with_controls(crate::LIGHTING_CONTROLS)
     .with_extension_effects()
     .with_extension_layering()

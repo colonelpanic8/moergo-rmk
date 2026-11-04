@@ -5,7 +5,8 @@ mod device_data;
 mod trackpad;
 
 pub const BOARD_LEDS_PER_HALF: usize = 30;
-pub const BOARD_SCENE_CAPACITY: usize = 80;
+pub const BOARD_SCENE_CAPACITY: usize = 160;
+pub const BOARD_RULE_CAPACITY: usize = 200;
 pub const BOARD_CHANNEL_CEILING: u8 = 102;
 /// Treat configured colours as sRGB code values rather than raw LED duty.
 /// On, mid-tones land where a display puts them; configurations authored by
@@ -86,7 +87,7 @@ mod keyboard_central {
             preferences,
         );
         storage
-            .stream_lighting_runtime_conditional_scenes(crate::lighting::SCENE_CAPACITY, |rule| {
+            .stream_lighting_runtime_conditional_scenes(crate::lighting::RULE_CAPACITY, |rule| {
                 crate::central_lighting::install_rule(&mut engine, rule)
             })
             .await;

@@ -17,10 +17,10 @@ use rmk::event::{
 };
 use rmk::lighting::topology::MatrixPosition;
 use rmk::lighting::{
-    BatteryStatusProvider, BuiltinEffect, ConditionalScenes, IndicatorState, LayerState,
-    LightingContext, LightingMailbox, LightingOutput, LightingProcessor, LightingService,
-    LogicalFrame, Rgb8, SnapshotProvider, StandardCommand, StandardError, StandardLightingEngine,
-    StandardReplicaSlot, StandardReply,
+    BatteryStatusProvider, BuiltinEffect, IndicatorState, LayerState, LightingContext,
+    LightingMailbox, LightingOutput, LightingProcessor, LightingService, LogicalFrame,
+    PackedConditionalScenes, Rgb8, SnapshotProvider, StandardCommand, StandardError,
+    StandardLightingEngine, StandardReplicaSlot, StandardReply,
 };
 use rmk::storage::{
     LightingExtensionOverlayRecord, LightingExtensionParamsRecord, LightingExtensionRecord, Storage,
@@ -54,32 +54,24 @@ bind_interrupts!(struct Irqs {
 pub const LEDS_PER_HALF: usize = crate::BOARD_LEDS_PER_HALF;
 pub const TOTAL_LEDS: usize = LEDS_PER_HALF * 2;
 pub const OVERLAY_CAPACITY: usize = 64;
-/// Bounds the runtime scene table and, separately, the runtime conditional
-/// table, so a host can carry every lighting rule this board would otherwise
-/// compile in and still have room to grow. The compiled config currently uses
-/// 104 scene cells across seven layers and 65 conditional rules.
+/// Bounds the runtime scene table: a total across all layers, not a per-layer
+/// budget, since a cell carries its own layer and every layer shares the one
+/// table. A cell is 4 bytes with its effect interned.
 ///
-/// This is a total across all layers, not a per-layer budget: a cell carries
-/// its own layer, and every layer shares the one table.
-///
-/// It is not a cheap constant. Measured on the central binary, each unit of
-/// capacity is multiplied across the live tables, atomic-replace staging,
-/// replica snapshot in `REPLICA_SLOT`, and the `StandardCommand` payloads
-/// queued in a `COMMAND_CAPACITY`-deep mailbox. Both runtime tables intern
-/// effects so repeated styles do not pay that multiplier per cell. Raising
-/// this value still requires measuring the final central binary.
-///
-/// Widening a cell costs the same as raising the capacity. Adding the
-/// connection and effects predicates to `ConditionSet` grew every conditional
-/// cell, and at 160 the central ran out of stack: opening a conditional
-/// replace transaction faulted and reset the board. 112 restored the RAM
-/// budget the board shipped with before those predicates; the bonded-slot
-/// and usb-connected predicates widened the cell again, so 100 gives back
-/// that growth with margin. `config/glove80.toml` currently carries 95 scene
-/// cells and 47 conditional rules, while `config/go60.toml` carries 73 and 52.
-/// Glove80 retains the 100-cell budget; Go60 uses 80 because its larger
-/// firmware otherwise faults while opening an atomic table replacement.
+/// Neither capacity is a cheap constant. Each table exists as the live copy,
+/// the atomic-replace staging copy, and the replica snapshot in
+/// `REPLICA_SLOT`, plus the peripheral's split staging, so raising one still
+/// requires measuring the final central binary. The split snapshot carries
+/// both counts as `u8`.
 pub const SCENE_CAPACITY: usize = crate::BOARD_SCENE_CAPACITY;
+/// Bounds the runtime conditional rules. Rules are packed records sharing
+/// `RULE_CAPACITY * rmk::lighting::CONDITIONAL_RULE_BYTES` bytes, so a table
+/// of unusually wide rules fills its bytes before its count.
+///
+/// At 160 cells and 200 rules, each copy of the two tables together is smaller
+/// than Go60's was at 80 of each, when every rule carried a whole 40-byte
+/// `ConditionSet`.
+pub const RULE_CAPACITY: usize = crate::BOARD_RULE_CAPACITY;
 pub const COMMAND_CAPACITY: usize = 4;
 
 /// Number of simultaneous key hits each typing-reactive effect can remember.
@@ -89,20 +81,25 @@ pub const REACTIVE_HITS: usize = 16;
 pub type Engine = StandardLightingEngine<
     'static,
     PaletteFxSource<TopologyLayout<TOTAL_LEDS>, TOTAL_LEDS, REACTIVE_HITS>,
-    ConditionalScenes<'static, BuiltinEffect, BoardBatteryProvider>,
+    PackedConditionalScenes<
+        'static,
+        BoardBatteryProvider,
+        { crate::LIGHTING_CONDITIONAL_RULE_COUNT },
+    >,
     TOTAL_LEDS,
     OVERLAY_CAPACITY,
     SCENE_CAPACITY,
+    RULE_CAPACITY,
 >;
 pub type CoreMailbox = LightingMailbox<
-    StandardCommand<OVERLAY_CAPACITY, SCENE_CAPACITY>,
+    StandardCommand<OVERLAY_CAPACITY, SCENE_CAPACITY, RULE_CAPACITY>,
     StandardReply,
     StandardError,
     COMMAND_CAPACITY,
 >;
 
 pub static CORE_MAILBOX: CoreMailbox = LightingMailbox::new();
-pub static REPLICA_SLOT: StandardReplicaSlot<OVERLAY_CAPACITY, SCENE_CAPACITY> =
+pub static REPLICA_SLOT: StandardReplicaSlot<OVERLAY_CAPACITY, SCENE_CAPACITY, RULE_CAPACITY> =
     StandardReplicaSlot::new();
 
 #[derive(Clone, Copy)]
@@ -616,7 +613,7 @@ pub fn engine(preferences: Preferences) -> Engine {
         crate::LIGHTING_BACKGROUND,
         crate::LIGHTING_LAYER_SCENES,
         palettefx,
-        ConditionalScenes::new(&crate::LIGHTING_CONDITIONAL_SCENE_CELLS, &BOARD_BATTERIES),
+        PackedConditionalScenes::new(crate::LIGHTING_CONDITIONAL_RULES, &BOARD_BATTERIES),
     )
     .with_controls(controls)
     .with_battery_status_provider(&BOARD_BATTERIES)
