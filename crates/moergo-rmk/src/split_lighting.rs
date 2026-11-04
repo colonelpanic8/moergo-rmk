@@ -24,7 +24,9 @@ use rmk::types::battery::{BatteryStatus, ChargeState};
 use rmk::types::ble::BleState;
 use rmk::types::protocol::rynk::LIGHTING_REPLICA_DIGEST_SCHEMA_V1;
 
-use crate::lighting::{BatteryPair, LEDS_PER_HALF, OVERLAY_CAPACITY, SCENE_CAPACITY, TOTAL_LEDS};
+use crate::lighting::{
+    BatteryPair, LEDS_PER_HALF, OVERLAY_CAPACITY, RULE_CAPACITY, SCENE_CAPACITY, TOTAL_LEDS,
+};
 
 // Version 11 carries the runtime wake-layer mask in a staged snapshot packet.
 // Version 10 widens the conditional-scene extension packet with the effects,
@@ -1530,7 +1532,7 @@ fn hash_conditions(hash: &mut Fnv32, conditions: ConditionSet) {
 /// Overlay TTL lifetime, context, clocks, and transport generation are fast
 /// state and deliberately excluded.
 pub fn replica_digests(
-    snapshot: &StandardReplicaState<OVERLAY_CAPACITY, SCENE_CAPACITY>,
+    snapshot: &StandardReplicaState<OVERLAY_CAPACITY, SCENE_CAPACITY, RULE_CAPACITY>,
 ) -> ReplicaDigests {
     let mut settings = Fnv32::domain(1);
     settings.bytes(&[
@@ -1648,7 +1650,7 @@ struct SnapshotCounts {
 }
 
 fn snapshot_counts(
-    snapshot: &StandardReplicaState<OVERLAY_CAPACITY, SCENE_CAPACITY>,
+    snapshot: &StandardReplicaState<OVERLAY_CAPACITY, SCENE_CAPACITY, RULE_CAPACITY>,
 ) -> SnapshotCounts {
     SnapshotCounts {
         overlay_cells: snapshot
@@ -1677,7 +1679,7 @@ fn snapshot_counts(
 /// can never disagree with what the sender goes on to enqueue.
 fn walk_snapshot(
     generation: u8,
-    snapshot: &StandardReplicaState<OVERLAY_CAPACITY, SCENE_CAPACITY>,
+    snapshot: &StandardReplicaState<OVERLAY_CAPACITY, SCENE_CAPACITY, RULE_CAPACITY>,
     batteries: BatteryPair,
     counts: &SnapshotCounts,
     mut sink: impl FnMut(Message) -> bool,
@@ -1794,13 +1796,13 @@ fn walk_snapshot(
 /// central backs off.
 pub fn try_queue_snapshot(
     generation: u8,
-    snapshot: &StandardReplicaState<OVERLAY_CAPACITY, SCENE_CAPACITY>,
+    snapshot: &StandardReplicaState<OVERLAY_CAPACITY, SCENE_CAPACITY, RULE_CAPACITY>,
     batteries: BatteryPair,
 ) -> bool {
     let counts = snapshot_counts(snapshot);
     if counts.overlay_cells > LEDS_PER_HALF
         || counts.scene_cells > SCENE_CAPACITY
-        || counts.conditional_scene_cells > SCENE_CAPACITY
+        || counts.conditional_scene_cells > RULE_CAPACITY
     {
         return false;
     }
@@ -1824,7 +1826,7 @@ pub fn try_queue_snapshot(
 
 struct Stage {
     generation: u8,
-    snapshot: StandardReplicaState<OVERLAY_CAPACITY, SCENE_CAPACITY>,
+    snapshot: StandardReplicaState<OVERLAY_CAPACITY, SCENE_CAPACITY, RULE_CAPACITY>,
     expected_overlay_cells: usize,
     expected_scene_cells: usize,
     expected_conditional_scene_cells: Option<usize>,
@@ -1876,7 +1878,7 @@ impl SnapshotStage {
         message: Message,
     ) -> Option<(
         u8,
-        StandardReplicaState<OVERLAY_CAPACITY, SCENE_CAPACITY>,
+        StandardReplicaState<OVERLAY_CAPACITY, SCENE_CAPACITY, RULE_CAPACITY>,
         BatteryPair,
     )> {
         match message {
@@ -2038,7 +2040,7 @@ impl SnapshotStage {
                 let stage = self.stage.as_mut()?;
                 if stage.generation != generation
                     || stage.snapshot.revision != revision
-                    || cell_count as usize > SCENE_CAPACITY
+                    || cell_count as usize > RULE_CAPACITY
                 {
                     stage_abort(7);
                     self.stage = None;
@@ -2084,12 +2086,11 @@ impl SnapshotStage {
                     && stage
                         .snapshot
                         .runtime_conditional_scenes
-                        .last_conditions_mut()
-                        .map(|conditions| {
+                        .amend_last_conditions(|conditions| {
                             conditions.connection = connection;
                             conditions.effects = effects;
                         })
-                        .is_some();
+                        .is_ok();
                 if !amended {
                     stage_abort(9);
                     self.stage = None;

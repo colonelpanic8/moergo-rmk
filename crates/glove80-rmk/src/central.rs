@@ -2,7 +2,8 @@
 #![no_std]
 
 pub const BOARD_LEDS_PER_HALF: usize = 40;
-pub const BOARD_SCENE_CAPACITY: usize = 100;
+pub const BOARD_SCENE_CAPACITY: usize = 160;
+pub const BOARD_RULE_CAPACITY: usize = 200;
 /// 80% of full scale. MoErgo's own `glove80_lh_defconfig` caps
 /// `CONFIG_ZMK_RGB_UNDERGLOW_BRT_MAX` at 80 and warns verbatim: "DO NOT CHANGE
 /// CONFIG_ZMK_RGB_UNDERGLOW_BRT_MAX TO ABOVE 80. Configuring BRT_MAX above 80%
@@ -83,7 +84,7 @@ mod keyboard_central {
             preferences,
         );
         storage
-            .stream_lighting_runtime_conditional_scenes(crate::lighting::SCENE_CAPACITY, |rule| {
+            .stream_lighting_runtime_conditional_scenes(crate::lighting::RULE_CAPACITY, |rule| {
                 crate::central_lighting::install_rule(&mut engine, rule)
             })
             .await;

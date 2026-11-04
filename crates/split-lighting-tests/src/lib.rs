@@ -17,7 +17,8 @@ mod lighting {
     pub const LEDS_PER_HALF: usize = 40;
     pub const TOTAL_LEDS: usize = 80;
     pub const OVERLAY_CAPACITY: usize = 64;
-    pub const SCENE_CAPACITY: usize = 100;
+    pub const SCENE_CAPACITY: usize = 160;
+    pub const RULE_CAPACITY: usize = 200;
 
     #[derive(Clone, Copy, Debug, Eq, PartialEq)]
     pub struct BatteryPair {
@@ -409,9 +410,9 @@ fn solid(slot: u16, red: u8, ttl: Option<u32>) -> OverlayCell {
 
 fn replica(
     overlay: OverlayBatch<64>,
-    scenes: SceneTable<100>,
-    conditional: RuntimeConditionalSceneTable<100>,
-) -> StandardReplicaState<64, 100> {
+    scenes: SceneTable<160>,
+    conditional: RuntimeConditionalSceneTable<200>,
+) -> StandardReplicaState<64, 160, 200> {
     StandardReplicaState {
         revision: 7,
         mutable: mutable(),
