@@ -23,7 +23,8 @@ use rmk::lighting::{
     StandardReplicaSlot, StandardReply,
 };
 use rmk::storage::{
-    LightingExtensionOverlayRecord, LightingExtensionParamsRecord, LightingExtensionRecord, Storage,
+    LightingExtensionOverlayRecord, LightingExtensionParamsRecord, LightingExtensionRecord,
+    LightingOutputStateRecord, Storage,
 };
 use rmk::types::battery::BatteryStatus;
 use rmk_palettefx::effects::{CrosshairParams, Effect};
@@ -499,6 +500,10 @@ pub struct Preferences {
     overlay: Option<LightingExtensionOverlayRecord>,
     wake_layers: Option<u64>,
     output_mode: Option<rmk::types::protocol::rynk::LightingOutputMode>,
+    /// Brightness and background as last chosen; `None` boots the compiled ones.
+    output_state: Option<LightingOutputStateRecord>,
+    /// The effects' brightness before they were last turned off.
+    effects_on_value: Option<u8>,
     params: rmk::heapless::Vec<LightingExtensionParamsRecord, { Effect::<1>::NAMES.len() }>,
 }
 
@@ -510,6 +515,8 @@ pub async fn load_preferences<F: embedded_storage_async::nor_flash::NorFlash>(
         overlay: storage.read_lighting_extension_overlay().await,
         wake_layers: storage.read_lighting_wake_layers().await,
         output_mode: storage.read_lighting_output_mode().await,
+        output_state: storage.read_lighting_output_state().await,
+        effects_on_value: storage.read_lighting_effects_on_value().await,
         params: rmk::heapless::Vec::new(),
     };
     const {
@@ -567,12 +574,12 @@ pub fn engine(preferences: Preferences) -> Engine {
         config.initial_palette = record.palette as usize;
         config.initial_speed = record.speed;
         // A persisted zero means the user left the effects toggled off; keep
-        // them off, and let RgbTog come back at the compiled brightness.
+        // them off, and let RgbTog bring back the brightness they had.
         config.initial_enabled = record.value != 0;
         config.initial_val = if record.value != 0 {
             record.value
         } else {
-            DEFAULT_EFFECT_VAL
+            preferences.effects_on_value.unwrap_or(DEFAULT_EFFECT_VAL)
         };
         let restored = record.params();
         config.initial_param_len = restored.len() as u8;
@@ -609,14 +616,21 @@ pub fn engine(preferences: Preferences) -> Engine {
             LightingOutputMode::PoweredOnly => rmk::lighting::OutputMode::PoweredOnly,
         };
     }
-    Engine::new(
-        crate::LIGHTING_BACKGROUND,
+    // The lights come up as bright as they were left, over the background
+    // last chosen; a board that never changed them keeps the compiled ones.
+    let output = preferences.output_state;
+    let engine = Engine::new(
+        output.map_or(crate::LIGHTING_BACKGROUND, |record| record.background()),
         crate::LIGHTING_LAYER_SCENES,
         palettefx,
         PackedConditionalScenes::new(crate::LIGHTING_CONDITIONAL_RULES, &BOARD_BATTERIES),
     )
     .with_controls(controls)
-    .with_battery_status_provider(&BOARD_BATTERIES)
+    .with_battery_status_provider(&BOARD_BATTERIES);
+    match output {
+        Some(record) => engine.with_output_brightness(record.output_brightness),
+        None => engine,
+    }
 }
 
 #[rmk::macros::processor(subscribe = [MaintenanceModeEvent])]
