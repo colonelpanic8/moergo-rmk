@@ -69,7 +69,7 @@ pub fn run(selector: &Selector, json: bool) -> Result<()> {
 async fn query(requested: Option<&str>, json: bool) -> Result<()> {
     let adapter = Adapter::default()
         .await
-        .ok_or_else(|| anyhow!("no BLE adapter found"))?;
+        .map_err(|e| anyhow!("no BLE adapter found: {e}"))?;
     adapter
         .wait_available()
         .await

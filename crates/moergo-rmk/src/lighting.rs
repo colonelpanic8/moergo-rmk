@@ -17,10 +17,10 @@ use rmk::event::{
 };
 use rmk::lighting::topology::MatrixPosition;
 use rmk::lighting::{
-    BatteryStatusProvider, BuiltinEffect, IndicatorState, LayerState, LightingContext,
-    LightingMailbox, LightingOutput, LightingProcessor, LightingService, LogicalFrame,
-    PackedConditionalScenes, Rgb8, SnapshotProvider, StandardCommand, StandardError,
-    StandardLightingEngine, StandardReplicaSlot, StandardReply,
+    BatteryStatusProvider, IndicatorState, LayerState, LightingContext, LightingMailbox,
+    LightingOutput, LightingProcessor, LightingService, LogicalFrame, PackedConditionalScenes,
+    Rgb8, SnapshotProvider, StandardCommand, StandardError, StandardLightingEngine,
+    StandardReplicaSlot, StandardReply,
 };
 use rmk::storage::{
     LightingExtensionOverlayRecord, LightingExtensionParamsRecord, LightingExtensionRecord, Storage,
@@ -230,7 +230,7 @@ const ATTESTATION_INTERVAL: Duration = Duration::from_secs(300);
 pub(crate) const BOOTLOADER_TAG: u8 = 0xb0;
 
 struct Ws2812Chain {
-    spim: Spim<'static>,
+    spim: Spim<'static, embassy_nrf::mode::Async>,
     buf: [u8; ENCODED_LEN],
 }
 
@@ -241,7 +241,7 @@ impl Ws2812Chain {
         config.mode = spim::MODE_0;
         config.orc = 0;
         Self {
-            spim: Spim::new_txonly_nosck(spi, Irqs, data_pin, config),
+            spim: Spim::new_txonly_nosck(spi, data_pin, Irqs, config),
             buf: [0; ENCODED_LEN],
         }
     }
@@ -824,11 +824,12 @@ pub fn power_monitor(
     let mut pwm_config = SimpleConfig::default();
     pwm_config.prescaler = Prescaler::Div1;
     pwm_config.max_duty = STATUS_PWM_TOP;
-    let mut status_pwm = SimplePwm::new_1ch(pwm, status_led_pin, &pwm_config);
-    status_pwm.set_duty(
-        0,
-        DutyCycle::inverted(if powered { STATUS_PWM_DUTY } else { 0 }),
-    );
+    let mut status_pwm = SimplePwm::new_1ch(pwm, status_led_pin, pwm_config);
+    status_pwm.ch0().set_duty(DutyCycle::inverted(if powered {
+        STATUS_PWM_DUTY
+    } else {
+        0
+    }));
     PowerMonitor {
         powered,
         sleeping: false,
@@ -847,7 +848,7 @@ impl PowerMonitor {
         } else {
             0
         };
-        self.status_pwm.set_duty(0, DutyCycle::inverted(duty));
+        self.status_pwm.ch0().set_duty(DutyCycle::inverted(duty));
     }
 
     fn refresh_power(&mut self) {

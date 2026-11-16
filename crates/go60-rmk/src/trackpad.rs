@@ -49,11 +49,11 @@ pub fn init(
     mosi: Peri<'static, peripherals::P0_22>,
     cs: Peri<'static, peripherals::P0_25>,
     dr: Peri<'static, peripherals::P0_23>,
-) -> CirquePinnacle<Spim<'static>, Output<'static>, Input<'static>> {
+) -> CirquePinnacle<Spim<'static, embassy_nrf::mode::Async>, Output<'static>, Input<'static>> {
     let mut spi_config = spim::Config::default();
     spi_config.frequency = spim::Frequency::M1;
     spi_config.mode = spim::MODE_1;
-    let spi = Spim::new(spi, Irqs, sck, miso, mosi, spi_config);
+    let spi = Spim::new(spi, sck, mosi, miso, Irqs, spi_config);
 
     let cs = Output::new(cs, Level::High, OutputDrive::Standard);
     let dr = Input::new(dr, Pull::Down);

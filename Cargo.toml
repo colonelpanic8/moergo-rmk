@@ -28,3 +28,8 @@ exclude = [
   "dependencies/rmk-palettefx",
 ]
 resolver = "2"
+
+# Mirrors rynk's patch; patches only apply in the root workspace. Drop it once
+# bluest 0.6.10 is on crates.io.
+[patch.crates-io]
+bluest = { git = "https://github.com/alexmoon/bluest", rev = "64bb4df8143defd30a4aa441ab1520816cd3b8eb" }
