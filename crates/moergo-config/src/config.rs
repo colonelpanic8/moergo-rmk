@@ -98,6 +98,9 @@ pub struct RuntimeConfig {
     /// BLE advertising name. `{slot}` expands to the one-based active profile.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bluetooth_name: Option<String>,
+    /// Per-keyboard names keyed by the hardware serial, without the USB `rynk:` prefix.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub bluetooth_names: BTreeMap<String, String>,
     #[serde(default)]
     pub default_layer: u8,
     #[serde(default, rename = "layer")]
@@ -1926,6 +1929,31 @@ fn profile_names_by_slot(entries: &[MorseProfileEntry]) -> Vec<String> {
     names
 }
 
+fn validate_bluetooth_names(name: Option<&str>, names: &BTreeMap<String, String>) -> Result<()> {
+    if name.is_some() && !names.is_empty() {
+        bail!("use either bluetooth_name or bluetooth_names, not both");
+    }
+    for serial in names.keys() {
+        if !matches!(serial.len(), 6 | 16)
+            || !serial
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        {
+            bail!("bluetooth_names key {serial:?} must be a 6- or 16-digit lowercase hardware ID, without rynk:");
+        }
+    }
+    let mut unique = std::collections::BTreeSet::new();
+    for name in name.into_iter().chain(names.values().map(String::as_str)) {
+        if name.is_empty() || name.len() > BLE_NAME_MAX_LEN {
+            bail!("bluetooth_name must contain 1..={BLE_NAME_MAX_LEN} UTF-8 bytes");
+        }
+        if !unique.insert(name) {
+            bail!("bluetooth_names assigns the same name {name:?} to multiple keyboards");
+        }
+    }
+    Ok(())
+}
+
 impl RuntimeConfig {
     /// Deserialize and validate runtime TOML. Validation is exactly what
     /// [`Self::snapshot`] checks, so a config that parses here is one a
@@ -1933,6 +1961,45 @@ impl RuntimeConfig {
     pub fn from_toml(text: &str) -> Result<Self> {
         let config: Self = toml::from_str(text)?;
         config.snapshot().map(|_| config)
+    }
+
+    /// Resolve a per-board name without using a host, BLE slot, or mutable name.
+    pub fn bluetooth_name_for_serial(&self, serial: Option<&str>) -> Result<Option<&str>> {
+        if self.bluetooth_names.is_empty() {
+            return Ok(self.bluetooth_name.as_deref());
+        }
+        let serial =
+            serial.context("this configuration requires the keyboard's hardware serial")?;
+        let key = serial
+            .strip_prefix("rynk:")
+            .unwrap_or(serial)
+            .to_ascii_lowercase();
+        self.bluetooth_names.get(&key).map(|name| Some(name.as_str())).with_context(|| {
+            format!("no bluetooth_names entry for hardware serial {serial}; refusing to guess a name")
+        })
+    }
+
+    /// A pull updates only this board's entry and retains the other assignments.
+    pub fn retain_bluetooth_names(&mut self, previous: &Self, serial: Option<&str>) -> Result<()> {
+        if previous.bluetooth_names.is_empty() {
+            return Ok(());
+        }
+        previous.bluetooth_name_for_serial(serial)?;
+        let serial = serial.context("missing hardware serial")?;
+        let key = serial
+            .strip_prefix("rynk:")
+            .unwrap_or(serial)
+            .to_ascii_lowercase();
+        let name = self
+            .bluetooth_name
+            .as_ref()
+            .context("keyboard does not report a Bluetooth name")?;
+        let mut names = previous.bluetooth_names.clone();
+        names.insert(key, name.clone());
+        validate_bluetooth_names(None, &names)?;
+        self.bluetooth_name = None;
+        self.bluetooth_names = names;
+        Ok(())
     }
 
     /// The managed state this configuration describes, resolving whatever a
@@ -2018,17 +2085,7 @@ impl RuntimeConfig {
         if self.layers.is_empty() {
             bail!("configuration must contain at least one [[layer]]");
         }
-        if let Some(name) = &self.bluetooth_name {
-            if name.is_empty() {
-                bail!("bluetooth_name must not be empty");
-            }
-            if name.len() > BLE_NAME_MAX_LEN {
-                bail!(
-                    "bluetooth_name is {} bytes, but BLE names are limited to {BLE_NAME_MAX_LEN}",
-                    name.len()
-                );
-            }
-        }
+        validate_bluetooth_names(self.bluetooth_name.as_deref(), &self.bluetooth_names)?;
         let morse_profiles = self
             .behavior
             .as_ref()
@@ -2285,6 +2342,7 @@ impl RuntimeConfig {
             rows: snapshot.rows,
             cols: snapshot.cols,
             bluetooth_name: snapshot.bluetooth_name.clone(),
+            bluetooth_names: BTreeMap::new(),
             default_layer: snapshot.default_layer,
             layers,
             morses: used_slots(
@@ -4481,6 +4539,7 @@ mod tests {
             rows: ROWS,
             cols: COLS,
             bluetooth_name: bluetooth_name.map(str::to_owned),
+            bluetooth_names: BTreeMap::new(),
             default_layer: 0,
             layers: vec![LayerConfig {
                 id: "base".into(),
@@ -5093,6 +5152,84 @@ color = "#0000ff"
         let layer = &config.snapshot().unwrap().layers[0];
         assert_eq!(layer[0], KeyAction::No);
         assert_eq!(layer[1], action("KC_B"));
+    }
+
+    #[test]
+    fn bluetooth_names_resolve_the_physical_keyboard_across_transports() {
+        let mut config = minimal_runtime_config(None);
+        config.bluetooth_names = BTreeMap::from([
+            ("bcbd6d".into(), "WhiteIG80".into()),
+            ("7fb875".into(), "BlackIG80".into()),
+        ]);
+        let config = RuntimeConfig::from_toml(&config.to_toml().unwrap()).unwrap();
+        assert_eq!(
+            config
+                .bluetooth_name_for_serial(Some("rynk:bcbd6d"))
+                .unwrap(),
+            Some("WhiteIG80")
+        );
+        assert_eq!(
+            config.bluetooth_name_for_serial(Some("bcbd6d")).unwrap(),
+            Some("WhiteIG80")
+        );
+        assert_eq!(
+            config
+                .bluetooth_name_for_serial(Some("rynk:7fb875"))
+                .unwrap(),
+            Some("BlackIG80")
+        );
+        assert!(config
+            .bluetooth_name_for_serial(Some("rynk:ffffff"))
+            .is_err());
+        assert!(config.bluetooth_name_for_serial(Some("rmk:0.9.0")).is_err());
+        assert!(config.bluetooth_name_for_serial(None).is_err());
+    }
+
+    #[test]
+    fn bluetooth_names_reject_ambiguous_or_invalid_assignments() {
+        let mut config = minimal_runtime_config(None);
+        config
+            .bluetooth_names
+            .insert("bcbd6d".into(), "WhiteIG80".into());
+        config.bluetooth_name = Some("shared".into());
+        assert!(config.snapshot().is_err());
+        config.bluetooth_name = None;
+        config
+            .bluetooth_names
+            .insert("7fb875".into(), "WhiteIG80".into());
+        assert!(config.snapshot().is_err());
+        config.bluetooth_names.remove("7fb875");
+        for (serial, name) in [
+            ("strixi-minaj", "WhiteIG80"),
+            ("bcbd6d", ""),
+            ("bcbd6d", "12345678901234567"),
+        ] {
+            config.bluetooth_names = BTreeMap::from([(serial.into(), name.into())]);
+            assert!(config.snapshot().is_err(), "accepted {serial}: {name}");
+        }
+        config.bluetooth_names = BTreeMap::from([("bcbd6d0123456789".into(), "WhiteIG80".into())]);
+        assert!(config.snapshot().is_ok());
+    }
+
+    #[test]
+    fn bluetooth_names_pull_keeps_other_keyboards_and_updates_only_the_selected_one() {
+        let mut previous = minimal_runtime_config(None);
+        previous.bluetooth_names = BTreeMap::from([
+            ("bcbd6d".into(), "WhiteIG80".into()),
+            ("7fb875".into(), "BlackIG80".into()),
+        ]);
+        let mut pulled = minimal_runtime_config(Some("WhiteNew"));
+        pulled
+            .retain_bluetooth_names(&previous, Some("rynk:bcbd6d"))
+            .unwrap();
+        assert_eq!(pulled.bluetooth_name, None);
+        assert_eq!(pulled.bluetooth_names["bcbd6d"], "WhiteNew");
+        assert_eq!(pulled.bluetooth_names["7fb875"], "BlackIG80");
+        let round_trip = RuntimeConfig::from_toml(&pulled.to_toml().unwrap()).unwrap();
+        assert_eq!(round_trip.bluetooth_names, pulled.bluetooth_names);
+        assert!(pulled
+            .retain_bluetooth_names(&previous, Some("ffffff"))
+            .is_err());
     }
 
     #[test]

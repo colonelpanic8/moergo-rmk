@@ -57,6 +57,13 @@ pub enum NameCommand {
     Get,
     /// Replace the template; `{slot}` expands to the one-based active slot.
     Set { template: String },
+    /// Restore this keyboard's configured name using its hardware serial.
+    Restore {
+        file: std::path::PathBuf,
+        /// Show the identity and intended name without writing it.
+        #[arg(long)]
+        dry_run: bool,
+    },
 }
 
 pub fn run(selector: &Selector, command: &ConnectionCommand) -> Result<()> {

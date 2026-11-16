@@ -11,6 +11,7 @@ mod battery;
 mod config;
 mod connection;
 mod device_data;
+mod identity;
 mod keymap;
 mod lighting;
 mod rynk_client;
@@ -88,6 +89,8 @@ enum Command {
     Maintenance,
     /// Show the CLI, firmware, RMK, and Rynk versions.
     Version,
+    /// Print timestamped topic pushes (layer, connection, lighting) until interrupted.
+    Watch,
 }
 
 fn selector(cli: &Cli) -> transport::Selector {
@@ -129,6 +132,7 @@ fn run(cli: Cli) -> Result<()> {
         Command::Keymap { command } => keymap::run(&selector(&cli), command),
         Command::Maintenance => rynk_client::run_maintenance(&selector(&cli)),
         Command::Version => version::run(&selector(&cli)),
+        Command::Watch => rynk_client::run_watch(&selector(&cli)),
         Command::Bootloader { options } => {
             lighting::run_bootloader(&selector(&cli), options.peripheral, options.yes)
         }

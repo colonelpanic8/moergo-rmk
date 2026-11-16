@@ -83,6 +83,50 @@ pub enum ConfigCommand {
     },
 }
 
+impl ConfigCommand {
+    pub fn needs_identity(&self) -> Result<bool> {
+        match self {
+            Self::Diff { file, .. } | Self::Apply { file, .. } => {
+                Ok(!parse(file)?.bluetooth_names.is_empty())
+            }
+            Self::Pull { file, .. } if file.exists() => {
+                Ok(!parse(file)?.bluetooth_names.is_empty())
+            }
+            _ => Ok(false),
+        }
+    }
+}
+
+pub async fn restore_name(client: &Client, file: &Path, serial: &str, dry_run: bool) -> Result<()> {
+    let config = parse(file)?;
+    let desired = config
+        .bluetooth_name_for_serial(Some(serial))?
+        .context("configuration does not assign a Bluetooth name")?;
+    let before = client.get_ble_name().await?;
+    println!("hardware serial: {serial}");
+    println!("Bluetooth name: {} -> {desired}", before.template);
+    if before.template.as_str() == desired || dry_run {
+        return Ok(());
+    }
+    crate::rynk_client::require_maintenance_mode(client).await?;
+    client
+        .set_ble_name(&BleName {
+            template: desired
+                .try_into()
+                .map_err(|_| anyhow!("Bluetooth name is too long"))?,
+        })
+        .await?;
+    let after = client.get_ble_name().await?;
+    if after.template.as_str() != desired {
+        bail!(
+            "Bluetooth name read-back mismatch: wanted {desired}, got {}",
+            after.template
+        );
+    }
+    println!("name restored and verified");
+    Ok(())
+}
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, ValueEnum)]
 pub enum ConfigFormat {
     #[default]
@@ -121,7 +165,18 @@ fn parse(path: &Path) -> Result<RuntimeConfig> {
 
 /// The state a file asks for, with every readable selector in it lowered
 /// through the topology the connected keyboard advertises.
-async fn desired_snapshot(client: &Client, config: RuntimeConfig) -> Result<Snapshot> {
+async fn desired_snapshot(
+    client: &Client,
+    config: RuntimeConfig,
+    serial: Option<&str>,
+) -> Result<Snapshot> {
+    let name = config.bluetooth_name_for_serial(serial)?.map(str::to_owned);
+    let mut snapshot = unresolved_snapshot(client, config).await?;
+    snapshot.bluetooth_name = name;
+    Ok(snapshot)
+}
+
+async fn unresolved_snapshot(client: &Client, config: RuntimeConfig) -> Result<Snapshot> {
     if !config.needs_topology() {
         return config.snapshot();
     }
@@ -251,7 +306,7 @@ pub fn run(selector: &Selector, command: &ConfigCommand) -> Result<()> {
     crate::rynk_client::run_config(selector, command)
 }
 
-pub async fn operate(client: &Client, command: &ConfigCommand) -> Result<()> {
+pub async fn operate(client: &Client, command: &ConfigCommand, serial: Option<&str>) -> Result<()> {
     match command {
         ConfigCommand::Validate { .. } => unreachable!("validate is offline"),
         ConfigCommand::Show { format } => {
@@ -267,6 +322,9 @@ pub async fn operate(client: &Client, command: &ConfigCommand) -> Result<()> {
                 .as_deref()
                 .and_then(|text| parse_text(text, file_format(file, Some(text))).ok());
             let mut config = RuntimeConfig::from_snapshot(&snapshot, labels.as_ref());
+            if let Some(previous) = labels.as_ref() {
+                config.retain_bluetooth_names(previous, serial)?;
+            }
             config.retain_non_default_params(&snapshot);
             let template = (inferred == ConfigFormat::MoergoJson)
                 .then_some(old_text.as_deref())
@@ -277,7 +335,7 @@ pub async fn operate(client: &Client, command: &ConfigCommand) -> Result<()> {
             println!("pulled live runtime configuration into {}", file.display());
         }
         ConfigCommand::Diff { file, exact } => {
-            let mut desired = desired_snapshot(client, parse(file)?).await?;
+            let mut desired = desired_snapshot(client, parse(file)?, serial).await?;
             if *exact {
                 claim_every_behavior_table(&mut desired);
             }
@@ -291,7 +349,7 @@ pub async fn operate(client: &Client, command: &ConfigCommand) -> Result<()> {
             dry_run,
             exact,
         } => {
-            let mut desired = desired_snapshot(client, parse(file)?).await?;
+            let mut desired = desired_snapshot(client, parse(file)?, serial).await?;
             if *exact {
                 claim_every_behavior_table(&mut desired);
             }

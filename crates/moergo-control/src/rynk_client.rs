@@ -42,6 +42,15 @@ enum Device {
     Ble(BleDevice),
 }
 
+impl Device {
+    async fn hardware_serial(&self) -> Result<String> {
+        match self {
+            Self::Hid(device) => crate::identity::usb_serial(device.path()),
+            Self::Ble(device) => crate::identity::ble_serial(device.id()).await,
+        }
+    }
+}
+
 pub fn run_keymap(selector: &Selector, command: &KeymapCommand) -> Result<()> {
     let runtime =
         tokio::runtime::Runtime::new().context("could not create the Rynk async runtime")?;
@@ -57,9 +66,15 @@ pub fn run_config(selector: &Selector, command: &ConfigCommand) -> Result<()> {
     let runtime =
         tokio::runtime::Runtime::new().context("could not create the Rynk async runtime")?;
     runtime.block_on(async {
-        match select_device(selector).await? {
-            Device::Hid(device) => run_config_device(device, command).await,
-            Device::Ble(device) => run_config_device(device, command).await,
+        let device = select_device(selector).await?;
+        let serial = if command.needs_identity()? {
+            Some(device.hardware_serial().await?)
+        } else {
+            None
+        };
+        match device {
+            Device::Hid(device) => run_config_device(device, command, serial.as_deref()).await,
+            Device::Ble(device) => run_config_device(device, command, serial.as_deref()).await,
         }
     })
 }
@@ -154,6 +169,50 @@ async fn read_batteries(
     )
 }
 
+pub fn run_watch(selector: &Selector) -> Result<()> {
+    let runtime =
+        tokio::runtime::Runtime::new().context("could not create the Rynk async runtime")?;
+    runtime.block_on(async {
+        match select_device(selector).await? {
+            Device::Hid(device) => run_watch_device(device).await,
+            Device::Ble(device) => run_watch_device(device).await,
+        }
+    })
+}
+
+async fn run_watch_device<D: RynkDevice>(device: D) -> Result<()> {
+    let label = device.label();
+    let (client, mut driver) = connect_device(device, &label).await?;
+    match select(driver.run(&client), watch_topics(&client)).await {
+        Either::First(error) => Err(anyhow!("Rynk connection ended: {error}")),
+        Either::Second(result) => result,
+    }
+}
+
+async fn watch_topics(client: &Client) -> Result<()> {
+    use rynk::rmk_types::protocol::rynk::TopicEvent;
+
+    client.get_capabilities().await?;
+    let started = std::time::Instant::now();
+    println!(
+        "{:9.3} output mode {:?}",
+        0.0,
+        client.get_lighting_output_mode().await?
+    );
+    loop {
+        let event = client.next_topic().await;
+        let at = started.elapsed().as_secs_f64();
+        match event {
+            TopicEvent::LightingChange(_) => {
+                let mode = client.get_lighting_output_mode().await?;
+                println!("{at:9.3} lighting changed: {mode:?}");
+            }
+            TopicEvent::WpmUpdate(_) | TopicEvent::BatteryStatusChange(_) => {}
+            other => println!("{at:9.3} {other:?}"),
+        }
+    }
+}
+
 pub fn run_maintenance(selector: &Selector) -> Result<()> {
     let runtime =
         tokio::runtime::Runtime::new().context("could not create the Rynk async runtime")?;
@@ -199,9 +258,20 @@ pub fn run_connection(selector: &Selector, command: &ConnectionCommand) -> Resul
     let runtime =
         tokio::runtime::Runtime::new().context("could not create the Rynk async runtime")?;
     runtime.block_on(async {
-        match select_device(selector).await? {
-            Device::Hid(device) => run_connection_device(device, command).await,
-            Device::Ble(device) => run_connection_device(device, command).await,
+        let device = select_device(selector).await?;
+        let serial = if matches!(
+            command,
+            ConnectionCommand::Name {
+                command: NameCommand::Restore { .. }
+            }
+        ) {
+            Some(device.hardware_serial().await?)
+        } else {
+            None
+        };
+        match device {
+            Device::Hid(device) => run_connection_device(device, command, serial.as_deref()).await,
+            Device::Ble(device) => run_connection_device(device, command, serial.as_deref()).await,
         }
     })
 }
@@ -209,16 +279,26 @@ pub fn run_connection(selector: &Selector, command: &ConnectionCommand) -> Resul
 async fn run_connection_device<D: RynkDevice>(
     device: D,
     command: &ConnectionCommand,
+    serial: Option<&str>,
 ) -> Result<()> {
     let label = device.label();
     let (client, mut driver) = connect_device(device, &label).await?;
-    match select(driver.run(&client), operate_connection(&client, command)).await {
+    match select(
+        driver.run(&client),
+        operate_connection(&client, command, serial),
+    )
+    .await
+    {
         Either::First(error) => Err(anyhow!("Rynk connection to {label} ended: {error}")),
         Either::Second(result) => result,
     }
 }
 
-async fn operate_connection(client: &Client, command: &ConnectionCommand) -> Result<()> {
+async fn operate_connection(
+    client: &Client,
+    command: &ConnectionCommand,
+    serial: Option<&str>,
+) -> Result<()> {
     if matches!(
         command,
         ConnectionCommand::Switch { .. }
@@ -268,6 +348,17 @@ async fn operate_connection(client: &Client, command: &ConnectionCommand) -> Res
             }
             client.set_ble_name(&name).await?;
             println!("{}", client.get_ble_name().await?.template);
+        }
+        ConnectionCommand::Name {
+            command: NameCommand::Restore { file, dry_run },
+        } => {
+            crate::config::restore_name(
+                client,
+                file,
+                serial.context("missing hardware serial")?,
+                *dry_run,
+            )
+            .await?;
         }
         ConnectionCommand::Split { force: None } => {
             let state = client.get_split_transport().await?;
@@ -322,12 +413,16 @@ async fn run_lighting_device<D: RynkDevice>(device: D, command: &LightingCommand
     }
 }
 
-async fn run_config_device<D: RynkDevice>(device: D, command: &ConfigCommand) -> Result<()> {
+async fn run_config_device<D: RynkDevice>(
+    device: D,
+    command: &ConfigCommand,
+    serial: Option<&str>,
+) -> Result<()> {
     let label = device.label();
     let (client, mut driver) = connect_device(device, &label).await?;
     match select(
         driver.run(&client),
-        crate::config::operate(&client, command),
+        crate::config::operate(&client, command, serial),
     )
     .await
     {

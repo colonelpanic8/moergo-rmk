@@ -74,6 +74,26 @@ Set `bluetooth_name = "Glove80 {slot}"` at the top level to give each active
 BLE profile a distinct one-based advertising name. The same persistent value
 can be inspected or changed directly with `connection name get` and
 `connection name set TEMPLATE`; names are limited to 16 UTF-8 bytes.
+For a shared layout, use `[bluetooth_names]` instead of `bluetooth_name`:
+
+```toml
+[bluetooth_names]
+abcdef = "MyKeyboard"
+123456 = "OtherKeyboard"
+```
+
+Keys are exact lowercase hardware serials: six hex digits on current MoErgo
+firmware, or sixteen when the firmware exposes the full ID. USB's `rynk:`
+prefix is omitted. The CLI reads the HID serial over USB or the standard
+Device Information serial over BLE; hostnames, BLE addresses, product IDs,
+and mutable names are never used as identity. Unknown serials abort diff and
+apply before any writes. Pull preserves other boards' entries in an existing
+map. Duplicate names and configurations with both name forms are rejected.
+
+`connection name restore FILE --dry-run` displays the serial and proposed
+name. Omit `--dry-run` to persist and verify only the name, leaving the rest
+of the runtime configuration alone.
+
 Lighting extensions remain generic: effect and palette names come from Rynk's
 extension descriptor, regardless of the firmware-side effect provider. Effects
 may also advertise tunable parameters, which the file addresses by name:

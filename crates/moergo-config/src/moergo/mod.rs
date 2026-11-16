@@ -249,6 +249,7 @@ pub fn import_moergo_layout(text: &str) -> Result<ImportedLayout> {
         rows: crate::ROWS,
         cols: crate::COLS,
         bluetooth_name: None,
+        bluetooth_names: Default::default(),
         default_layer: 0,
         layers: converted,
         morses,
