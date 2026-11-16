@@ -1070,21 +1070,6 @@ async fn write_macro_space(
     Ok(())
 }
 
-/// Cells per keymap write before waiting for the firmware to persist them.
-///
-/// The firmware hands every written cell to its flash task through a bounded
-/// channel and only accepts a page it can queue whole, answering `Busy`
-/// otherwise (`rmk/src/host/context.rs`, `wait_for_persist_room`); a page
-/// longer than the channel falls back to streaming through it and stalls the
-/// session for the length of any flash page migration in the middle. RMK's
-/// default channel is four deep, so four cells per page keep every write
-/// reply instant on any firmware and move all of the waiting into
-/// [`persist_barrier`] and [`write_page`]'s `Busy` retries, where it is timed
-/// and reported.
-///
-/// `MOERGO_PERSIST_BATCH` overrides the page size (still capped by the
-/// firmware's `max_bulk_keys`).
-const PERSIST_BATCH_DEFAULT: usize = 4;
 /// How long a page may keep drawing `Busy` before the apply gives up. The
 /// firmware waits about half a second for flash-queue room before answering,
 /// and a storage page migration holds the queue for tens of seconds.
@@ -1098,7 +1083,8 @@ const PERSIST_SLOW_THRESHOLD: Duration = Duration::from_secs(2);
 /// How keymap cells are written and confirmed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct WritePolicy {
-    /// Cells per write request.
+    /// Cells per write request. `MOERGO_PERSIST_BATCH` overrides it, still capped by the
+    /// firmware's `max_bulk_keys`.
     batch: usize,
     /// Rewrite whole layers (the pre-diff behaviour) instead of only the
     /// cells that differ from the keyboard. `MOERGO_WRITE_WHOLE_LAYERS=1`.
@@ -1112,11 +1098,13 @@ impl WritePolicy {
         } else {
             usize::MAX
         };
+        // Whole rows by default: the firmware persists a row segment per flash item, and
+        // `keymap_write_page_keys` keeps a page of them inside its flash queue.
         let batch = std::env::var("MOERGO_PERSIST_BATCH")
             .ok()
             .and_then(|value| value.trim().parse::<usize>().ok())
             .filter(|value| *value >= 1)
-            .unwrap_or(PERSIST_BATCH_DEFAULT)
+            .unwrap_or_else(|| rynk::keymap_write_page_keys(capabilities))
             .min(bulk_cap);
         let whole_layers = std::env::var("MOERGO_WRITE_WHOLE_LAYERS")
             .map(|value| matches!(value.trim(), "1" | "true" | "yes"))
@@ -1187,28 +1175,43 @@ impl PersistStats {
     }
 }
 
-/// Contiguous runs of flat cell indices where `wanted` differs from `present`.
+/// Runs of whole rows, as flat cell indices, holding a cell where `wanted` differs
+/// from `present`.
 ///
-/// A keyboard whose layer could not be read (`present` empty or the wrong
-/// length) gets the whole layer, since nothing can be assumed about it.
-fn changed_runs(
+/// A row is what a write costs: the firmware persists each row segment as one flash
+/// item, so sending the rest of a changed row is free and sending part of it twice is
+/// not. A keyboard whose layer could not be read (`present` empty or the wrong length)
+/// gets the whole layer, since nothing can be assumed about it.
+fn changed_rows(
     wanted: &[rynk::rmk_types::action::KeyAction],
     present: &[rynk::rmk_types::action::KeyAction],
+    cols: usize,
 ) -> Vec<std::ops::Range<usize>> {
+    use rynk::rmk_types::action::KeyAction;
+
     if wanted.is_empty() {
         return Vec::new();
     }
     if present.len() != wanted.len() {
         return std::iter::once(0..wanted.len()).collect();
     }
+    // `KeyAction`'s `==` leaves out the tap-hold profile, which the keyboard stores per key.
+    let same = |want: &KeyAction, have: &KeyAction| {
+        want == have
+            && match (want, have) {
+                (KeyAction::TapHold(_, _, want), KeyAction::TapHold(_, _, have)) => want == have,
+                _ => true,
+            }
+    };
     let mut runs: Vec<std::ops::Range<usize>> = Vec::new();
-    for (index, (want, have)) in wanted.iter().zip(present).enumerate() {
-        if want == have {
+    for (row, (want, have)) in wanted.chunks(cols).zip(present.chunks(cols)).enumerate() {
+        if want.iter().zip(have).all(|(want, have)| same(want, have)) {
             continue;
         }
+        let start = row * cols;
         match runs.last_mut() {
-            Some(run) if run.end == index => run.end = index + 1,
-            _ => runs.push(index..index + 1),
+            Some(run) if run.end == start => run.end = start + want.len(),
+            _ => runs.push(start..start + want.len()),
         }
     }
     runs
@@ -1328,18 +1331,15 @@ async fn write_page(
     Ok(())
 }
 
-/// Write the cells of one layer that differ from what the keyboard holds, in
-/// small pages, waiting for flash after each page.
+/// Write the rows of one layer that differ from what the keyboard holds, a page of
+/// whole rows at a time, waiting for flash after each page.
 ///
-/// Only changed cells go out: every written cell becomes a new item in the
-/// firmware's sequential-storage map whether or not its value changed, and
-/// that map is what fills up and forces slow page migrations. Rewriting a
-/// whole 84-cell layer for one edit is pure churn.
+/// Only changed rows go out: every written row segment becomes a new item in the
+/// firmware's sequential-storage map whether or not its value changed, and that map
+/// is what fills up and forces slow page migrations.
 ///
-/// Pages are short (see [`PERSIST_BATCH_DEFAULT`]) so a write reply never
-/// waits on flash; the wait is taken, timed, and reported by
-/// [`persist_barrier`] instead. Firmware without bulk transfer falls back to
-/// per-key writes with the same pacing.
+/// The wait for flash is taken, timed, and reported by [`persist_barrier`]. Firmware
+/// without bulk transfer falls back to per-key writes with the same pacing.
 async fn write_layer(
     client: &Client,
     capabilities: &rynk::rmk_types::protocol::rynk::DeviceCapabilities,
@@ -1352,7 +1352,7 @@ async fn write_layer(
     let runs = if policy.whole_layers {
         std::iter::once(0..wanted.len()).collect()
     } else {
-        changed_runs(wanted, present)
+        changed_rows(wanted, present, usize::from(capabilities.num_cols).max(1))
     };
     let pages = pages_of(&runs, policy.batch);
     if pages.is_empty() {
@@ -1441,9 +1441,6 @@ async fn apply_snapshot(client: &Client, desired: &Snapshot, before: &Snapshot) 
             .layers
             .get(usize::from(layer))
             .map_or(&[][..], Vec::as_slice);
-        if wanted == present {
-            continue;
-        }
         write_layer(
             client,
             &capabilities,
@@ -1777,29 +1774,33 @@ mod tests {
     }
 
     #[test]
-    fn changed_runs_groups_adjacent_differences() {
-        let present = vec![
-            action(4),
-            action(5),
-            action(6),
-            action(7),
-            action(8),
-            action(9),
-        ];
+    fn changed_rows_cover_each_row_holding_a_difference() {
+        let present: Vec<_> = (4..12).map(action).collect();
         let mut wanted = present.clone();
         wanted[1] = action(20);
         wanted[2] = action(21);
-        wanted[5] = action(22);
-        assert_eq!(changed_runs(&wanted, &present), vec![1..3, 5..6]);
-        assert!(changed_runs(&present, &present).is_empty());
+        wanted[7] = action(22);
+        // Rows of two: cells 1 and 2 dirty rows 0 and 1, which merge; cell 7 dirties row 3.
+        assert_eq!(changed_rows(&wanted, &present, 2), vec![0..4, 6..8]);
+        assert!(changed_rows(&present, &present, 2).is_empty());
     }
 
     #[test]
-    fn changed_runs_rewrites_unreadable_layers() {
+    fn changed_rows_see_a_tap_hold_profile_change() {
+        use rynk::rmk_types::action::{Action, KeyAction};
+        let tap_hold = |profile| KeyAction::TapHold(Action::No, Action::No, profile);
+        let present = vec![tap_hold(0), action(4)];
+        let wanted = vec![tap_hold(1), action(4)];
+        assert_eq!(wanted, present, "`==` alone cannot tell these apart");
+        assert_eq!(changed_rows(&wanted, &present, 2), vec![0..2]);
+    }
+
+    #[test]
+    fn changed_rows_rewrite_unreadable_layers() {
         let wanted = vec![action(4), action(5), action(6)];
-        assert_eq!(changed_runs(&wanted, &[]), vec![0..3]);
-        assert_eq!(changed_runs(&wanted, &wanted[..2]), vec![0..3]);
-        assert!(changed_runs(&[], &[]).is_empty());
+        assert_eq!(changed_rows(&wanted, &[], 2), vec![0..3]);
+        assert_eq!(changed_rows(&wanted, &wanted[..2], 2), vec![0..3]);
+        assert!(changed_rows(&[], &[], 2).is_empty());
     }
 
     #[test]
