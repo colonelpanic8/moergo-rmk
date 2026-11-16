@@ -2,7 +2,13 @@
 
 ## Glove80 and Go60 parity
 
-`crates/glove80-rmk` and `crates/go60-rmk` are equally thin board workspaces.
+`crates/glove80-rmk` and `crates/go60-rmk` are equally thin board crates.
+Both belong to the cross-compiled workspace rooted at `firmware/`, which owns
+their single `Cargo.lock`, the `[patch]` tables, and the release profile, so
+both boards always resolve the same dependency graph. Build one board at a
+time from its directory (as `xtask` and the justfile do); a combined build
+would unify board-specific RMK features. `xtask check` and both `dist`
+commands reject a lock in which a patched crate also resolves from crates.io.
 Shared embedded behavior belongs in `crates/moergo-rmk`; a board crate must not
 include or reach into its sibling's source tree. Keep their RMK feature sets
 aligned, apart from the Go60-only `_no_split_peripheral_battery_service`

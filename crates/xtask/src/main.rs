@@ -113,6 +113,7 @@ fn repo_root() -> Result<PathBuf> {
 fn check(root: &Path) -> Result<()> {
     validate_submodule(root, false)?;
     validate_local_paths(root)?;
+    validate_firmware_lock(root)?;
 
     run_command(
         root,
@@ -138,6 +139,68 @@ fn check(root: &Path) -> Result<()> {
         &[],
     )?;
     Ok(())
+}
+
+/// A `[patch.crates-io]` entry is silently bypassed when the lockfile keeps an
+/// older registry copy of the crate that still satisfies a dependent's
+/// requirement. Embassy's executor and timer queue then disagreed on the
+/// timer item size and the Glove80 lost every timer wakeup.
+fn validate_firmware_lock(root: &Path) -> Result<()> {
+    let manifest = fs::read_to_string(root.join("firmware/Cargo.toml"))?;
+    let lock = fs::read_to_string(root.join("firmware/Cargo.lock"))?;
+    let problems = bypassed_patches(&manifest, &lock)?;
+    if problems.is_empty() {
+        return Ok(());
+    }
+    Err(format!(
+        "firmware/Cargo.lock does not resolve every patched crate to its single patched copy:\n  {}\n\
+         run `cargo update -p <crate>@<registry version>` in firmware/",
+        problems.join("\n  ")
+    )
+    .into())
+}
+
+fn bypassed_patches(manifest: &str, lock: &str) -> Result<Vec<String>> {
+    let manifest = toml::from_str::<toml::Value>(manifest)?;
+    let lock = toml::from_str::<toml::Value>(lock)?;
+    let patched: Vec<&str> = manifest
+        .get("patch")
+        .and_then(|patch| patch.get("crates-io"))
+        .and_then(toml::Value::as_table)
+        .map(|table| table.keys().map(String::as_str).collect())
+        .unwrap_or_default();
+    let packages = lock
+        .get("package")
+        .and_then(toml::Value::as_array)
+        .ok_or("Cargo.lock has no packages")?;
+    let mut problems = Vec::new();
+    for name in patched {
+        let entries: Vec<(&str, &str)> = packages
+            .iter()
+            .filter(|package| package.get("name").and_then(toml::Value::as_str) == Some(name))
+            .map(|package| {
+                (
+                    package
+                        .get("version")
+                        .and_then(toml::Value::as_str)
+                        .unwrap_or("?"),
+                    package
+                        .get("source")
+                        .and_then(toml::Value::as_str)
+                        .unwrap_or("path"),
+                )
+            })
+            .collect();
+        for (version, source) in &entries {
+            if source.starts_with("registry+") {
+                problems.push(format!("{name} {version} resolves from crates.io"));
+            }
+        }
+        if entries.len() > 1 {
+            problems.push(format!("{name} has {} copies", entries.len()));
+        }
+    }
+    Ok(problems)
 }
 
 fn validate_submodule(root: &Path, allow_dirty: bool) -> Result<String> {
@@ -246,6 +309,7 @@ fn dist(root: &Path) -> Result<()> {
     let allow_dirty = env::var("MOERGO_ALLOW_DIRTY").as_deref() == Ok("1")
         || env::var("GLOVE80_ALLOW_DIRTY").as_deref() == Ok("1");
     let rmk_commit = validate_submodule(root, allow_dirty)?;
+    validate_firmware_lock(root)?;
     let dirty = !git(root, &["status", "--porcelain", "--untracked-files=normal"])?.is_empty();
     if dirty && !allow_dirty {
         return Err(
@@ -272,7 +336,7 @@ fn dist(root: &Path) -> Result<()> {
     let config_path = effective_config_path(&firmware_dir);
     let config_digests = config_profile::digests(&config_path)?;
     let build_hash_seed = firmware_build_hash_seed(&source_commit, &rmk_commit, &config_digests);
-    let rustflags = reproducible_rustflags(root, &config_path);
+    let rustflags = reproducible_rustflags(root, &firmware_dir, &config_path);
     // `--locked` refuses a stale lockfile instead of silently rewriting it:
     // that rewrite dirties the tree mid-run, and the next bundle then fails
     // the clean-repository check with no hint of the real cause.
@@ -327,6 +391,7 @@ fn dist_go60(root: &Path) -> Result<()> {
     let allow_dirty = env::var("MOERGO_ALLOW_DIRTY").as_deref() == Ok("1")
         || env::var("GO60_ALLOW_DIRTY").as_deref() == Ok("1");
     let rmk_commit = validate_submodule(root, allow_dirty)?;
+    validate_firmware_lock(root)?;
     let dirty = !git(root, &["status", "--porcelain", "--untracked-files=normal"])?.is_empty();
     if dirty && !allow_dirty {
         return Err(
@@ -356,7 +421,7 @@ fn dist_go60(root: &Path) -> Result<()> {
     let build_hash_seed = firmware_build_hash_seed(&source_commit, &rmk_commit, &config_digests);
     let build = CanonicalGo60Build::prepare(root, &config_path)?;
     let build_firmware_dir = build.root.join("crates/go60-rmk");
-    let rustflags = reproducible_rustflags(&build.root, &build.config_path);
+    let rustflags = reproducible_rustflags(&build.root, &build_firmware_dir, &build.config_path);
     // `--locked` refuses a stale lockfile instead of silently rewriting it:
     // that rewrite dirties the tree mid-run, and the next bundle then fails
     // the clean-repository check with no hint of the real cause.
@@ -596,8 +661,16 @@ fn copy_symlink(source: &Path, target: &Path) -> Result<()> {
     Ok(())
 }
 
-fn reproducible_rustflags(root: &Path, config_path: &Path) -> String {
-    let mut mappings = vec![(root.to_path_buf(), "/source/moergo-rmk")];
+fn reproducible_rustflags(root: &Path, firmware_dir: &Path, config_path: &Path) -> String {
+    // The board crates live outside the firmware workspace root, so Cargo hands
+    // rustc absolute source paths. Map the board directory away (the last
+    // matching remap wins) to keep the short `src/...` panic locations that a
+    // standalone board workspace produced; the Go60 central has no flash to
+    // spare for longer ones.
+    let mut mappings = vec![
+        (root.to_path_buf(), "/source/moergo-rmk"),
+        (firmware_dir.to_path_buf(), ""),
+    ];
     let cargo_home = env::var_os("CARGO_HOME").map(PathBuf::from).or_else(|| {
         env::var_os("HOME")
             .map(PathBuf::from)
@@ -1011,6 +1084,46 @@ fn run_command(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn lock_check_rejects_a_bypassed_patch() {
+        let manifest = r#"
+[patch.crates-io]
+embassy-executor-timer-queue = { git = "https://github.com/embassy-rs/embassy", rev = "12b84e3d" }
+"#;
+        let git = "git+https://github.com/embassy-rs/embassy?rev=12b84e3d#12b84e3d";
+        let stale = format!(
+            r#"
+[[package]]
+name = "embassy-executor-timer-queue"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+
+[[package]]
+name = "embassy-executor-timer-queue"
+version = "0.1.1"
+source = "{git}"
+"#
+        );
+        let problems = bypassed_patches(manifest, &stale).unwrap();
+        assert_eq!(
+            problems,
+            [
+                "embassy-executor-timer-queue 0.1.0 resolves from crates.io",
+                "embassy-executor-timer-queue has 2 copies",
+            ]
+        );
+
+        let unified = format!(
+            r#"
+[[package]]
+name = "embassy-executor-timer-queue"
+version = "0.1.1"
+source = "{git}"
+"#
+        );
+        assert!(bypassed_patches(manifest, &unified).unwrap().is_empty());
+    }
 
     #[test]
     fn uf2_round_trip_preserves_range_and_family() {

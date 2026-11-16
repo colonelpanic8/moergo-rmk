@@ -3,6 +3,8 @@ runner = "probe-rs run --chip nRF52840_xxAA"
 
 [build]
 target = "thumbv7em-none-eabihf"
+# Keep each board's artifacts beside it rather than in the shared workspace.
+target-dir = "target"
 
 [env]
 # The Go60 central is the flash-constrained half of the two boards: it carries

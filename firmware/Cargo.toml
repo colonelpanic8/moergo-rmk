@@ -1,0 +1,48 @@
+# Both board firmwares share one workspace so they resolve one dependency
+# graph and one Cargo.lock. Build a single board at a time (xtask and the
+# justfile run Cargo from the board directory); a combined build would unify
+# board-specific RMK features such as Go60's
+# `_no_split_peripheral_battery_service`. Each board keeps its own
+# `.cargo/config.toml` for the target, DEFMT_LOG, keyboard.toml and target dir.
+[workspace]
+members = ["../crates/glove80-rmk", "../crates/go60-rmk"]
+resolver = "2"
+
+# Patches only apply at the workspace root. Keep the Embassy patch in sync with
+# dependencies/rmk/rmk/Cargo.toml.
+[patch.crates-io]
+embassy-boot                 = { git = "https://github.com/embassy-rs/embassy", rev = "12b84e3dd8d6b31f045649b84250292c34e024d4" }
+embassy-boot-rp              = { git = "https://github.com/embassy-rs/embassy", rev = "12b84e3dd8d6b31f045649b84250292c34e024d4" }
+embassy-embedded-hal         = { git = "https://github.com/embassy-rs/embassy", rev = "12b84e3dd8d6b31f045649b84250292c34e024d4" }
+embassy-futures              = { git = "https://github.com/embassy-rs/embassy", rev = "12b84e3dd8d6b31f045649b84250292c34e024d4" }
+embassy-hal-internal         = { git = "https://github.com/embassy-rs/embassy", rev = "12b84e3dd8d6b31f045649b84250292c34e024d4" }
+embassy-nrf                  = { git = "https://github.com/embassy-rs/embassy", rev = "12b84e3dd8d6b31f045649b84250292c34e024d4" }
+embassy-rp                   = { git = "https://github.com/embassy-rs/embassy", rev = "12b84e3dd8d6b31f045649b84250292c34e024d4" }
+embassy-sync                 = { git = "https://github.com/embassy-rs/embassy", rev = "12b84e3dd8d6b31f045649b84250292c34e024d4" }
+embassy-time                 = { git = "https://github.com/embassy-rs/embassy", rev = "12b84e3dd8d6b31f045649b84250292c34e024d4" }
+embassy-time-driver          = { git = "https://github.com/embassy-rs/embassy", rev = "12b84e3dd8d6b31f045649b84250292c34e024d4" }
+embassy-time-queue-utils     = { git = "https://github.com/embassy-rs/embassy", rev = "12b84e3dd8d6b31f045649b84250292c34e024d4" }
+embassy-usb                  = { git = "https://github.com/embassy-rs/embassy", rev = "12b84e3dd8d6b31f045649b84250292c34e024d4" }
+embassy-usb-driver           = { git = "https://github.com/embassy-rs/embassy", rev = "12b84e3dd8d6b31f045649b84250292c34e024d4" }
+embassy-usb-logger           = { git = "https://github.com/embassy-rs/embassy", rev = "12b84e3dd8d6b31f045649b84250292c34e024d4" }
+embassy-executor-timer-queue = { git = "https://github.com/embassy-rs/embassy", rev = "12b84e3dd8d6b31f045649b84250292c34e024d4" }
+
+# rmk-palettefx's adapter names the fork by git URL; resolve it to the same
+# vendored submodule this firmware builds against.
+[patch."https://github.com/colonelpanic8/rmk"]
+rmk = { path = "../dependencies/rmk/rmk" }
+
+[profile.dev]
+codegen-units = 1
+debug = true
+opt-level = 1
+overflow-checks = true
+lto = false
+panic = 'unwind'
+
+[profile.release]
+codegen-units = 1
+debug = true
+opt-level = "z"
+overflow-checks = false
+lto = "fat"

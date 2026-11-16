@@ -11,7 +11,8 @@ This directory owns firmware services shared by Glove80 and Go60:
 The board binaries include these modules with `#[path]`. They compile in the
 board's crate, using its RMK-generated configuration, hardware constants, and
 diagnostic hooks. This directory is a shared source tree, not an independent
-Cargo package. The board workspaces own dependencies and build scripts.
+Cargo package. The board crates own build scripts; the `firmware/` workspace owns their shared
+dependency lock.
 
 `crates/xtask/tests/board_parity.rs` checks that both boards compile the shared
 services and keep their RMK features aligned, with the documented Go60 battery
