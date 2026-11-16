@@ -714,7 +714,7 @@ dependencies = [
  "defmt 1.1.1",
  "document-features",
  "embassy-executor-macros",
- "embassy-executor-timer-queue 0.1.0",
+ "embassy-executor-timer-queue",
 ]
 
 [[package]]
@@ -728,12 +728,6 @@ dependencies = [
  "quote",
  "syn 2.0.119",
 ]
-
-[[package]]
-name = "embassy-executor-timer-queue"
-version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2fc328bf943af66b80b98755db9106bf7e7471b0cf47dc8559cd9a6be504cc9c"
 
 [[package]]
 name = "embassy-executor-timer-queue"
@@ -852,7 +846,7 @@ name = "embassy-time-queue-utils"
 version = "0.3.2"
 source = "git+https://github.com/embassy-rs/embassy?rev=12b84e3dd8d6b31f045649b84250292c34e024d4#12b84e3dd8d6b31f045649b84250292c34e024d4"
 dependencies = [
- "embassy-executor-timer-queue 0.1.1",
+ "embassy-executor-timer-queue",
  "heapless 0.9.3",
 ]
 
