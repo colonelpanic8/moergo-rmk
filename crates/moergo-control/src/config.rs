@@ -1187,25 +1187,19 @@ fn changed_rows(
     present: &[rynk::rmk_types::action::KeyAction],
     cols: usize,
 ) -> Vec<std::ops::Range<usize>> {
-    use rynk::rmk_types::action::KeyAction;
-
     if wanted.is_empty() {
         return Vec::new();
     }
     if present.len() != wanted.len() {
         return std::iter::once(0..wanted.len()).collect();
     }
-    // `KeyAction`'s `==` leaves out the tap-hold profile, which the keyboard stores per key.
-    let same = |want: &KeyAction, have: &KeyAction| {
-        want == have
-            && match (want, have) {
-                (KeyAction::TapHold(_, _, want), KeyAction::TapHold(_, _, have)) => want == have,
-                _ => true,
-            }
-    };
     let mut runs: Vec<std::ops::Range<usize>> = Vec::new();
     for (row, (want, have)) in wanted.chunks(cols).zip(present.chunks(cols)).enumerate() {
-        if want.iter().zip(have).all(|(want, have)| same(want, have)) {
+        if want
+            .iter()
+            .zip(have)
+            .all(|(want, have)| moergo_config::same_key_action(*want, *have))
+        {
             continue;
         }
         let start = row * cols;

@@ -3252,6 +3252,16 @@ fn layer_metadata(index: usize, name: &str) -> Result<LayerMetadata> {
     })
 }
 
+/// Whether two keymap cells are stored identically. `KeyAction`'s `==` leaves out the
+/// tap-hold profile, which the keyboard keeps per key.
+pub fn same_key_action(a: KeyAction, b: KeyAction) -> bool {
+    a == b
+        && match (a, b) {
+            (KeyAction::TapHold(_, _, a), KeyAction::TapHold(_, _, b)) => a == b,
+            _ => true,
+        }
+}
+
 pub fn differences(desired: &Snapshot, live: &Snapshot) -> Vec<String> {
     let mut result = Vec::new();
     if desired.rows != live.rows || desired.cols != live.cols {
@@ -3285,7 +3295,7 @@ pub fn differences(desired: &Snapshot, live: &Snapshot) -> Vec<String> {
                 .layers
                 .get(layer)
                 .map_or(KeyAction::No, |keys| keys[offset]);
-            if wanted != present {
+            if !same_key_action(wanted, present) {
                 result.push(format!(
                     "layer {layer} r{},c{}: file {} != keyboard {}",
                     offset / usize::from(desired.cols),
@@ -5230,6 +5240,23 @@ color = "#0000ff"
         assert!(pulled
             .retain_bluetooth_names(&previous, Some("ffffff"))
             .is_err());
+    }
+
+    #[test]
+    fn differences_see_a_tap_hold_profile_change() {
+        let live = minimal_runtime_config(None).snapshot().unwrap();
+        let mut desired = live.clone();
+        let tap_hold = |profile| KeyAction::TapHold(Action::No, Action::No, profile);
+        desired.layers[0][0] = tap_hold(1);
+        let mut live = live;
+        live.layers[0][0] = tap_hold(0);
+        assert_eq!(
+            desired.layers[0][0], live.layers[0][0],
+            "`==` alone cannot tell these apart"
+        );
+        assert_eq!(differences(&desired, &live).len(), 1);
+        live.layers[0][0] = tap_hold(1);
+        assert!(differences(&desired, &live).is_empty());
     }
 
     #[test]
