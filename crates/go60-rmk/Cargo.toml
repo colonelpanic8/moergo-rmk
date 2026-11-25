@@ -22,6 +22,8 @@ rmk = { path = "../../dependencies/rmk/rmk", default-features = false, features 
     # Restore the output brightness a host or a lighting key last set. Remove to
     # boot at full brightness instead.
     "lighting_persist_brightness",
+    # Scroll in 1/120 detent steps on hosts that enable the HID Resolution Multiplier.
+    "hires_scroll",
     "adafruit_bl",
 ] }
 nrf-sdc = { git = "https://github.com/colonelpanic8/nrf-sdc", rev = "2f49a43bd74d9bf46ad805eb9c3d225394498ce8", features = [

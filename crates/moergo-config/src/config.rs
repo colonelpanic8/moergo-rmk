@@ -13,7 +13,8 @@ use rynk::rmk_types::pointing::{
     CaretConfig as WireCaretConfig, CursorConfig as WireCursorConfig,
     CursorRemapConfig as WireCursorRemapConfig, DragConfig as WireDragConfig,
     KeypadConfig as WireKeypadConfig, PointingMode, PressConfig as WirePressConfig,
-    ScrollConfig as WireScrollConfig, SniperConfig as WireSniperConfig,
+    ScrollAxis as WireScrollAxis, ScrollConfig as WireScrollConfig,
+    SniperConfig as WireSniperConfig,
 };
 use rynk::rmk_types::protocol::rynk::{
     BehaviorConfig as WireBehaviorConfig, BehaviorOptions as WireBehaviorOptions, LayerMetadata,
@@ -854,9 +855,13 @@ pub struct ComboConfig {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub positions: Vec<[u8; 2]>,
     pub output: String,
-    /// Restrict the combo to one layer. Absent means every layer.
+    /// Restrict the combo to one layer. Absent, with `layers` also absent,
+    /// means every layer.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub layer: Option<u8>,
+    /// Restrict the combo to several layers; exclusive with `layer`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub layers: Vec<u8>,
 }
 
 /// A macro, addressed from the keymap as `TriggerMacro(n)` by its position in
@@ -1373,7 +1378,7 @@ pub struct ConnectionConditionConfig {
 
 /// Highest addressable BLE profile slot. The board compiles in its profile
 /// count, so this is the host-side mirror of that bound and has to move with
-/// `ble_profiles_num`.
+/// `num_ble_profiles`.
 const MAX_BLE_SLOT: u8 = 3;
 
 /// Gate a rule on one BLE slot's stored bond.
@@ -1570,12 +1575,16 @@ impl PointingModeConfig {
                 invert_x,
                 invert_y,
             } => PointingMode::Scroll(WireScrollConfig {
-                multiplier_x,
-                divisor_x,
-                multiplier_y,
-                divisor_y,
-                invert_x,
-                invert_y,
+                wheel: WireScrollAxis {
+                    multiplier: multiplier_y,
+                    divisor: divisor_y,
+                    invert: invert_y,
+                },
+                pan: WireScrollAxis {
+                    multiplier: multiplier_x,
+                    divisor: divisor_x,
+                    invert: invert_x,
+                },
             }),
             Self::Sniper {
                 multiplier,
@@ -1698,12 +1707,12 @@ impl PointingModeConfig {
                 primary_button: Some(config.primary_button),
             },
             PointingMode::Scroll(config) => Self::Scroll {
-                multiplier_x: config.multiplier_x,
-                divisor_x: config.divisor_x,
-                multiplier_y: config.multiplier_y,
-                divisor_y: config.divisor_y,
-                invert_x: config.invert_x,
-                invert_y: config.invert_y,
+                multiplier_x: config.pan.multiplier,
+                divisor_x: config.pan.divisor,
+                multiplier_y: config.wheel.multiplier,
+                divisor_y: config.wheel.divisor,
+                invert_x: config.pan.invert,
+                invert_y: config.wheel.invert,
             },
             PointingMode::Sniper(config) => Self::Sniper {
                 multiplier: config.multiplier,
@@ -2799,7 +2808,26 @@ fn modifier_list_from_wire(
     names
 }
 
+/// Every layer, as a combo's layer mask.
+const ALL_COMBO_LAYERS: u32 = u32::MAX;
+
 impl ComboConfig {
+    /// The firmware's layer mask for `layer`/`layers`; neither means every layer.
+    fn layer_mask(&self) -> Result<u32> {
+        if self.layer.is_some() && !self.layers.is_empty() {
+            bail!("a combo cannot set both layer and layers");
+        }
+        let layers = self.layer.as_slice().iter().chain(&self.layers);
+        let mut mask = 0u32;
+        for &layer in layers {
+            if layer >= 32 {
+                bail!("combo layer {layer} is beyond the 32 layers a combo can name");
+            }
+            mask |= 1 << layer;
+        }
+        Ok(if mask == 0 { ALL_COMBO_LAYERS } else { mask })
+    }
+
     pub(crate) fn to_wire(
         &self,
         profile_names: &[String],
@@ -2840,7 +2868,7 @@ impl ComboConfig {
             return Ok(ComboDefinition::Positions(PositionCombo {
                 positions,
                 output,
-                layer: self.layer,
+                layers: self.layer_mask()?,
             }));
         }
         let mut actions = heapless::Vec::new();
@@ -2856,7 +2884,7 @@ impl ComboConfig {
         Ok(ComboDefinition::Actions(Combo {
             actions,
             output,
-            layer: self.layer,
+            layers: self.layer_mask()?,
         }))
     }
 
@@ -2865,7 +2893,7 @@ impl ComboConfig {
         index: usize,
         profile_names: &[String],
     ) -> Self {
-        let (keys, positions, output, layer) = match definition {
+        let (keys, positions, output, mask) = match definition {
             ComboDefinition::Actions(combo) => (
                 combo
                     .actions
@@ -2874,7 +2902,7 @@ impl ComboConfig {
                     .collect(),
                 Vec::new(),
                 combo.output,
-                combo.layer,
+                combo.layers,
             ),
             ComboDefinition::Positions(combo) => (
                 Vec::new(),
@@ -2884,7 +2912,7 @@ impl ComboConfig {
                     .map(|position| [position.row, position.col])
                     .collect(),
                 combo.output,
-                combo.layer,
+                combo.layers,
             ),
         };
         Self {
@@ -2892,7 +2920,12 @@ impl ComboConfig {
             keys,
             positions,
             output: crate::keycodes::format_keycode(crate::rynk_keycode::to_via_keycode(output)),
-            layer,
+            layer: (mask.count_ones() == 1).then(|| mask.trailing_zeros() as u8),
+            layers: if mask == ALL_COMBO_LAYERS || mask.count_ones() == 1 {
+                Vec::new()
+            } else {
+                (0..32u8).filter(|layer| mask & (1 << layer) != 0).collect()
+            },
         }
     }
 }
@@ -5505,6 +5538,7 @@ primary_button = 2
             positions: Vec::new(),
             output: "KC_F11".to_owned(),
             layer: Some(2),
+            layers: Vec::new(),
         };
 
         let wire = config.to_wire(&profiles, ROWS, COLS).unwrap();
@@ -5525,6 +5559,7 @@ primary_button = 2
             positions: vec![[3, 1], [3, 10]],
             output: "KC_ESC".to_owned(),
             layer: Some(2),
+            layers: Vec::new(),
         };
 
         let wire = config.to_wire(&[], ROWS, COLS).unwrap();
@@ -5566,7 +5601,7 @@ primary_button = 2
                     .into_iter()
                     .collect(),
                 output: KeyAction::Single(escape),
-                layer: None,
+                layers: ALL_COMBO_LAYERS,
             }),
             ComboDefinition::empty(),
         ]);
@@ -5923,7 +5958,7 @@ Density = 6
         let combo = |trigger: KeyAction| Combo {
             actions: Default::default(),
             output: trigger,
-            layer: None,
+            layers: ALL_COMBO_LAYERS,
         };
         let empty = ComboDefinition::empty();
 

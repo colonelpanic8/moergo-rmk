@@ -192,9 +192,9 @@ mod tests {
 [keyboard]
 name = "Go60"
 [rmk]
-ble_profiles_num = 3
-combo_max_num = 32
-morse_max_num = 64
+num_ble_profiles = 3
+max_combos = 32
+max_morses = 64
 [keymap]
 layers = 16
 [[keymap.layer]]
@@ -213,9 +213,9 @@ wake_layers = [1]
 [keyboard]
 name = "Go60"
 [rmk]
-ble_profiles_num = 3
-combo_max_num = 32
-morse_max_num = 64
+num_ble_profiles = 3
+max_combos = 32
+max_morses = 64
 [keymap]
 layers = 16
 [[keymap.layer]]
@@ -261,7 +261,7 @@ wake_layers = [2]
 
     #[test]
     fn capacity_drift_changes_platform_profile() {
-        let smaller = PERSONAL.replace("morse_max_num = 64", "morse_max_num = 8");
+        let smaller = PERSONAL.replace("max_morses = 64", "max_morses = 8");
         assert_ne!(
             digests_from_str(STOCK).unwrap().platform_profile,
             digests_from_str(&smaller).unwrap().platform_profile

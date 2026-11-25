@@ -95,7 +95,7 @@ pub(crate) fn render(status: &ConnectionStatus) -> String {
         UsbState::Configured => "connected",
         UsbState::Suspended => "suspended",
     };
-    let ble = match status.ble.state {
+    let ble = match status.selected_profile().state {
         BleState::Advertising => "advertising (pairable)",
         BleState::Connected => "connected",
         BleState::Inactive => "inactive",
@@ -114,6 +114,6 @@ pub(crate) fn render(status: &ConnectionStatus) -> String {
          ble: slot {} {ble}\n\
          preferred: {preferred}\n\
          typing goes to: {active}\n",
-        status.ble.profile,
+        status.selected,
     )
 }

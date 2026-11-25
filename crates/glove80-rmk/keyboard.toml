@@ -22,7 +22,7 @@ chip = "nrf52840"
 # number: User0-3 select, User4/5 next/previous, User6 clears the active
 # bond, User7 toggles the preferred transport, User8 (held) clears the
 # split peer.
-ble_profiles_num = 4
+num_ble_profiles = 4
 # The right half carries both input and replicated lighting state over the
 # split link. On USB power attend every 7.5 ms event; on battery allow one
 # skipped event (15 ms maximum interval) to retain some radio savings.
@@ -38,8 +38,8 @@ split_central_max_latency_battery = 1
 # feeder. Static RAM headroom and a successful build do not prove a larger
 # configuration will boot. Do not raise these values without a left-half
 # hardware canary and a known-good recovery UF2 ready.
-morse_max_num = 64
-combo_max_num = 32
+max_morses = 64
+max_combos = 32
 # The RMK default macro space (256 bytes) is sufficient for the imported short
 # macros, so it is intentionally not enlarged here.
 # Depth of the queue between the Rynk session and the storage task. A keymap

@@ -15,11 +15,11 @@ manufacturer = "MoErgo"
 chip = "nrf52840"
 
 [rmk]
-ble_profiles_num = 3
+num_ble_profiles = 3
 split_central_max_latency_powered = 0
 split_central_max_latency_battery = 1
-morse_max_num = 64
-combo_max_num = 32
+max_morses = 64
+max_combos = 32
 # Depth of the queue between the Rynk session and the storage task. A keymap
 # write is only accepted when its whole page fits here (the firmware answers
 # Busy otherwise), and a lighting persist or two may already be queued ahead

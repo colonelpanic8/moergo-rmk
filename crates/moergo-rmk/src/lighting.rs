@@ -727,7 +727,12 @@ static PERIPHERAL_CONTEXT: BlockingMutex<rmk::RawMutex, Cell<LightingContext>> =
         // Replaced by the central's bitmap on the first replicated context;
         // until then the peripheral knows of no bonds.
         bonded_slots: 0,
-        connection: rmk::types::connection::ConnectionStatus::new(),
+        connection: rmk::lighting::LightingConnection {
+            active: None,
+            usb_ready: false,
+            profile: 0,
+            ble_state: rmk::types::ble::BleState::Inactive,
+        },
         maintenance_unlocked: false,
         split_transport: rmk::lighting::SplitTransportState {
             auto: false,
@@ -754,7 +759,7 @@ impl PeripheralState {
 
     fn merge_ephemeral(context: &mut LightingContext) {
         context.layers = PERIPHERAL_CONTEXT.lock(Cell::get).layers;
-        context.connection = rmk::state::current_connection_status();
+        context.connection = (&rmk::state::current_connection_status()).into();
     }
 
     /// Apply RMK's native high-priority effective-layer edge immediately.
@@ -796,7 +801,7 @@ impl SnapshotProvider for PeripheralState {
         context.local_powered = local_vbus_present();
         // The split link replicates the central's connection status into this
         // half's own global; the lighting context packet does not carry it.
-        context.connection = rmk::state::current_connection_status();
+        context.connection = (&rmk::state::current_connection_status()).into();
         context
     }
 }

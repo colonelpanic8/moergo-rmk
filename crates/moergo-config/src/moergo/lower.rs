@@ -672,21 +672,23 @@ impl<'a> Lowering<'a> {
             // per layer.
             match &combo.layers {
                 Some(layers) if !layers.iter().any(|layer| *layer < 0) => {
-                    for editor_layer in layers.iter().map(|layer| *layer as usize) {
-                        let Some(layer) = self.remap_layer(editor_layer) else {
-                            continue;
-                        };
+                    let mask = layers
+                        .iter()
+                        .filter_map(|layer| self.remap_layer(*layer as usize))
+                        .filter(|layer| *layer < 32)
+                        .fold(0u32, |mask, layer| mask | 1 << layer);
+                    if mask != 0 {
                         out.push(PositionCombo {
-                            positions: positions.clone(),
+                            positions,
                             output,
-                            layer: Some(layer),
+                            layers: mask,
                         });
                     }
                 }
                 _ => out.push(PositionCombo {
                     positions,
                     output,
-                    layer: None,
+                    layers: u32::MAX,
                 }),
             }
         }

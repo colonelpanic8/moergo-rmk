@@ -686,7 +686,7 @@ async fn read_behaviors(client: &Client) -> Result<BehaviorSnapshot> {
         hold_trigger_positions,
         auto_mouse_layers: optional_endpoint(client.get_auto_mouse_layer_configs().await)?
             .map(|state| state.configs),
-        morses: if capabilities.max_morse > 0 {
+        morses: if capabilities.max_morses > 0 {
             Some(client.read_all_morses().await?)
         } else {
             None

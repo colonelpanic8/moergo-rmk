@@ -131,7 +131,7 @@ fn every_combo_resolves_on_each_layer_it_is_declared_for() {
             .runtime
             .combos
             .iter()
-            .all(|combo| combo.layer.is_some()),
+            .all(|combo| combo.layer.is_some() || !combo.layers.is_empty()),
         "a combo lost its layer restriction"
     );
     assert!(
@@ -336,10 +336,17 @@ fn refusing_a_layout_names_every_binding_it_cannot_import() {
 #[test]
 fn every_engrammer_combo_survives() {
     let imported = import_moergo_layout(ENGRAMMER).expect("import");
+    // A combo declared on several layers arrives as one combo scoped to all of
+    // them, so count the layers each one covers.
     let declared = 21;
+    let covered: usize = imported
+        .runtime
+        .combos
+        .iter()
+        .map(|combo| combo.layers.len().max(1))
+        .sum();
     assert_eq!(
-        imported.runtime.combos.len(),
-        declared,
+        covered, declared,
         "combos went missing: {:?}",
         imported.runtime.combos
     );
