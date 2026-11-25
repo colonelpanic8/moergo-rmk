@@ -8,7 +8,8 @@
 //! the scaffolding rather than transliterate it.
 
 use moergo_config::{
-    import_moergo_layout, runtime_config_from_moergo_json, RuntimeConfig, Severity,
+    import_moergo_layout, runtime_config_from_moergo_json, RuntimeConfig, Severity, COLS,
+    MOERGO_TO_MATRIX,
 };
 use serde_json::json;
 
@@ -336,20 +337,59 @@ fn refusing_a_layout_names_every_binding_it_cannot_import() {
 #[test]
 fn every_engrammer_combo_survives() {
     let imported = import_moergo_layout(ENGRAMMER).expect("import");
-    // A combo declared on several layers arrives as one combo scoped to all of
-    // them, so count the layers each one covers.
-    let declared = 21;
-    let covered: usize = imported
-        .runtime
-        .combos
+    let root: serde_json::Value = serde_json::from_str(ENGRAMMER).expect("fixture parses");
+    let declared = root["combos"].as_array().expect("combos");
+    assert_eq!(declared.len(), 21);
+
+    let to_matrix = |position: &serde_json::Value| {
+        let offset = MOERGO_TO_MATRIX[position.as_u64().expect("key position") as usize];
+        [
+            (offset / usize::from(COLS)) as u8,
+            (offset % usize::from(COLS)) as u8,
+        ]
+    };
+    let output_of = |combo: &serde_json::Value| {
+        let positions: Vec<[u8; 2]> = combo["keyPositions"]
+            .as_array()
+            .expect("keyPositions")
+            .iter()
+            .map(to_matrix)
+            .collect();
+        imported
+            .runtime
+            .combos
+            .iter()
+            .find(|imported| imported.positions == positions)
+            .map(|imported| imported.output.as_str())
+    };
+
+    let missing: Vec<&str> = declared
         .iter()
-        .map(|combo| combo.layers.len().max(1))
-        .sum();
+        .filter(|combo| output_of(combo).is_none())
+        .map(|combo| combo["name"].as_str().unwrap_or_default())
+        .collect();
+    assert!(missing.is_empty(), "combos went missing: {missing:?}");
+    assert_eq!(imported.runtime.combos.len(), declared.len());
+
+    // ZMK's modifier functions nest, so `LA(LC(LSHFT))` holds all three
+    // modifiers; reading only the outer `LA` lost these meh and hyper chords.
+    let output_named = |name: &str| {
+        output_of(
+            declared
+                .iter()
+                .find(|combo| combo["name"] == name)
+                .expect("declared"),
+        )
+    };
     assert_eq!(
-        covered, declared,
-        "combos went missing: {:?}",
-        imported.runtime.combos
+        output_named("right_meh_ACS_v1_TKZ"),
+        Some("LCTL(LALT(KC_LSFT))")
     );
+    assert_eq!(
+        output_named("right_hyper_GACS"),
+        Some("LCTL(LALT(LGUI(KC_LSFT)))")
+    );
+    assert_eq!(output_named("right_turbo_CS"), Some("LCTL(KC_LSFT)"));
 }
 
 /// A combo whose output cannot be converted is *dropped*, not approximated.
@@ -358,26 +398,34 @@ fn every_engrammer_combo_survives() {
 /// prevent.
 #[test]
 fn an_unconvertible_combo_output_is_a_drop() {
-    let mut root: serde_json::Value = serde_json::from_str(ENGRAMMER).expect("fixture parses");
-    root["combos"][0]["binding"] = serde_json::json!({ "value": "&no_such_behavior" });
-    let text = serde_json::to_string(&root).expect("reserialize");
+    for (binding, named) in [
+        (json!({ "value": "&no_such_behavior" }), "no_such_behavior"),
+        (
+            json!({ "value": "&kp", "params": [{ "value": "NO_SUCH_KEY" }] }),
+            "NO_SUCH_KEY",
+        ),
+    ] {
+        let mut root: serde_json::Value = serde_json::from_str(ENGRAMMER).expect("fixture parses");
+        root["combos"][0]["binding"] = binding;
+        let text = serde_json::to_string(&root).expect("reserialize");
 
-    let imported = import_moergo_layout(&text).expect("the report form still succeeds");
-    let dropped: Vec<&str> = imported
-        .diagnostics
-        .iter()
-        .filter(|note| note.severity == Severity::Dropped)
-        .map(|note| note.message.as_str())
-        .collect();
-    assert_eq!(
-        dropped.len(),
-        1,
-        "expected exactly one drop, got {dropped:?}"
-    );
-    assert!(dropped[0].contains("no_such_behavior"), "{dropped:?}");
-    // And the strict entry point refuses it, which it cannot do for an
-    // approximation.
-    assert!(runtime_config_from_moergo_json(&text).is_err());
+        let imported = import_moergo_layout(&text).expect("the report form still succeeds");
+        let dropped: Vec<&str> = imported
+            .diagnostics
+            .iter()
+            .filter(|note| note.severity == Severity::Dropped)
+            .map(|note| note.message.as_str())
+            .collect();
+        assert_eq!(
+            dropped.len(),
+            1,
+            "expected exactly one drop, got {dropped:?}"
+        );
+        assert!(dropped[0].contains(named), "{dropped:?}");
+        // And the strict entry point refuses it, which it cannot do for an
+        // approximation.
+        assert!(runtime_config_from_moergo_json(&text).is_err());
+    }
 }
 
 /// Editors disagree about declaring a parameterized macro's `params`: TailorKey

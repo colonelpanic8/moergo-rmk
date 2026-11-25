@@ -636,8 +636,20 @@ impl<'a> Lowering<'a> {
                     );
                 }
             }
-            let Some(output) = self.combo_output(&combo.binding, &here) else {
-                continue;
+            let reported = self.diagnostics.len();
+            let output = match self.combo_output(&combo.binding, &here) {
+                Ok(output) => output,
+                Err(error) => {
+                    // A failed output discards the combo, so it must be a drop;
+                    // `resolve` may already have recorded one for it.
+                    let already_dropped = self.diagnostics[reported..]
+                        .iter()
+                        .any(|note| note.severity == Severity::Dropped);
+                    if !already_dropped {
+                        self.unmapped_binding(here(), &error);
+                    }
+                    continue;
+                }
             };
 
             let mut positions = heapless::Vec::new();
@@ -695,8 +707,9 @@ impl<'a> Lowering<'a> {
         out
     }
 
-    /// A mod-morph case's output as a VIA keycode, through the same converter
-    /// the keymap path uses so a nested `LS(N9)` resolves identically.
+    /// A `&kp` or mod-morph case's output as a VIA keycode, through the same
+    /// converter the keymap path uses so a nested `LS(N9)` resolves
+    /// identically.
     fn convert_binding(&mut self, binding: &Binding, here: &dyn Fn() -> String) -> Result<u16> {
         match binding.name() {
             "&kp" => {
@@ -713,40 +726,34 @@ impl<'a> Lowering<'a> {
         }
     }
 
-    fn combo_output(&mut self, binding: &Binding, here: &dyn Fn() -> String) -> Option<KeyAction> {
-        match binding.name() {
-            "&kp" => binding
-                .param_text(0)
-                .and_then(|code| super::zmk_keycode_to_via(&code).ok())
-                .map(from_via_keycode),
-            "&caps_word" => Some(from_via_keycode(
-                crate::keycodes::parse_keycode("QK_CAPS_WORD_TOGGLE").ok()?,
-            )),
-            "&tog" => binding
-                .param_u8(0)
-                .and_then(|layer| self.remap_layer(layer as usize))
-                .map(|layer| KeyAction::Single(Action::LayerToggle(layer))),
-            // These three are converted a few lines away for a keymap cell; a
-            // combo output is the same conversion, and leaving them out here is
-            // why a layout's sticky-modifier and layer-reset chords vanished.
-            "&sk" => binding
-                .param_text(0)
-                .and_then(|modifier| super::zmk_modifier(&modifier).ok())
-                .and_then(|modifier| keycodes::parse_keycode(&format!("OSM({modifier})")).ok())
-                .map(from_via_keycode),
-            "&to" => binding
-                .param_u8(0)
-                .and_then(|layer| self.remap_layer(layer as usize))
-                .map(|layer| KeyAction::Single(Action::DefaultLayer(layer))),
-            "&sl" => binding
-                .param_u8(0)
-                .and_then(|layer| self.remap_layer(layer as usize))
-                .and_then(|layer| keycodes::parse_keycode(&format!("OSL({layer})")).ok())
-                .map(from_via_keycode),
-            "&mo" => binding
-                .param_u8(0)
-                .and_then(|layer| self.remap_layer(layer as usize))
-                .map(|layer| KeyAction::Single(Action::LayerOn(layer))),
+    /// A combo's output action, or why it has none.
+    fn combo_output(&mut self, binding: &Binding, here: &dyn Fn() -> String) -> Result<KeyAction> {
+        let layer = |this: &Self, index: usize| -> Result<u8> {
+            let editor_layer = binding
+                .param_u8(index)
+                .with_context(|| format!("{} {} needs a layer index", here(), binding.name()))?;
+            this.remap_layer(editor_layer as usize)
+                .with_context(|| format!("{} layer {editor_layer} is not imported", here()))
+        };
+        let action = match binding.name() {
+            // `&kp` takes the whole nested keycode, so `LA(LC(LSHFT))` keeps
+            // its inner modifiers instead of being read as a bare `LA`.
+            "&kp" => from_via_keycode(self.convert_binding(binding, here)?),
+            "&caps_word" => from_via_keycode(keycodes::parse_keycode("QK_CAPS_WORD_TOGGLE")?),
+            "&tog" => KeyAction::Single(Action::LayerToggle(layer(self, 0)?)),
+            "&sk" => {
+                let modifier = binding
+                    .param_text(0)
+                    .with_context(|| format!("{} &sk is missing its modifier", here()))?;
+                let modifier = super::zmk_modifier(&modifier)?;
+                from_via_keycode(keycodes::parse_keycode(&format!("OSM({modifier})"))?)
+            }
+            "&to" => KeyAction::Single(Action::DefaultLayer(layer(self, 0)?)),
+            "&sl" => from_via_keycode(keycodes::parse_keycode(&format!(
+                "OSL({})",
+                layer(self, 0)?
+            ))?),
+            "&mo" => KeyAction::Single(Action::LayerOn(layer(self, 0)?)),
             // A window-switcher chord: hold a modifier and a layer together for
             // as long as the combo keys are held, so the layer's Tab steps
             // through the list.
@@ -755,19 +762,22 @@ impl<'a> Lowering<'a> {
                 .macro_named(name)
                 .is_some_and(holds_modifier_with_layer) =>
             {
-                let modifier = binding.param_text(0)?;
-                let modifier = super::zmk_modifier(&modifier).ok()?;
-                let layer = self.remap_layer(binding.param_u8(1)? as usize)?;
+                let modifier = binding
+                    .param_text(0)
+                    .with_context(|| format!("{} {name} is missing its modifier", here()))?;
+                let modifier = super::zmk_modifier(&modifier)?;
+                let layer = layer(self, 1)?;
                 // `LMT` is the chord exactly: hold the modifier and the layer
                 // for as long as the combo keys are held, tapping the wrapped
                 // key once when the chord engages.
                 let tap = self
                     .tables
                     .macro_named(name)
-                    .and_then(|entry| chord_tap_key(&entry.clone(), self.tables))?;
-                keycodes::parse_keycode(&format!("LMT({layer}, {modifier}, {tap})"))
-                    .ok()
-                    .map(from_via_keycode)
+                    .and_then(|entry| chord_tap_key(&entry.clone(), self.tables))
+                    .with_context(|| format!("{} {name} taps no single key", here()))?;
+                from_via_keycode(keycodes::parse_keycode(&format!(
+                    "LMT({layer}, {modifier}, {tap})"
+                ))?)
             }
             other
                 if self.tables.hold_tap(other).is_some()
@@ -777,26 +787,19 @@ impl<'a> Lowering<'a> {
                 // A custom behavior resolves to a single keycode for a keymap
                 // cell — a morse index for a hold-tap, a macro trigger — and a
                 // combo output is the same kind of value, so run the same
-                // resolver. `resolve` reports its own gaps and yields KC_NO,
-                // which is nothing worth firing a combo for.
+                // resolver. KC_NO is nothing worth firing a combo for.
                 let params: Vec<Value> = binding.params.iter().map(Binding::to_value).collect();
-                match self.resolve(other, &params, here) {
-                    Ok(0) | Err(_) => None,
-                    Ok(code) => Some(from_via_keycode(code)),
+                match self.resolve(other, &params, here)? {
+                    0 => bail!("{} output behavior '{other}' resolves to nothing", here()),
+                    code => from_via_keycode(code),
                 }
             }
-            other => {
-                // The combo is discarded right after this, so it is a drop. Any
-                // other severity would let `validate` call a file clean while
-                // two thirds of its combos quietly failed to arrive.
-                self.report(
-                    Severity::Dropped,
-                    Some(here()),
-                    format!("output behavior '{other}' has no Rynk equivalent"),
-                );
-                None
-            }
-        }
+            other => bail!(
+                "{} output behavior '{other}' has no Rynk equivalent",
+                here()
+            ),
+        };
+        Ok(action)
     }
 }
 
