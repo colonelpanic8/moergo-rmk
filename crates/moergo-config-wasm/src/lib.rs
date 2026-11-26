@@ -231,7 +231,7 @@ pub fn render_config_as(
     let labels = previous
         .as_deref()
         .and_then(|text| parse_text(text, detect_config_format(text)).ok());
-    let mut config = RuntimeConfig::from_snapshot(&snapshot, labels.as_ref());
+    let mut config = RuntimeConfig::from_snapshot(&snapshot, labels.as_ref()).map_err(js_error)?;
     // A rendered file records only what the user actually tuned; parameters
     // still holding their firmware default are noise, and a file that omits a
     // parameter leaves it alone rather than resetting it.

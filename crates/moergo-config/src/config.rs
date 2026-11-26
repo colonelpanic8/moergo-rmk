@@ -8,6 +8,7 @@ use rynk::rmk_types::action::{Action, KeyAction};
 use rynk::rmk_types::auto_mouse::AutoMouseLayerConfig as WireAutoMouseLayerConfig;
 use rynk::rmk_types::ble::BleState as WireBleState;
 use rynk::rmk_types::combo::{Combo, ComboDefinition, MatrixPosition, PositionCombo};
+use rynk::rmk_types::keycode::KeyCode;
 use rynk::rmk_types::morse::{Morse, MorseMode, MorseProfile, MORSE_PROFILE_NAME_MAX_LEN};
 use rynk::rmk_types::pointing::{
     CaretConfig as WireCaretConfig, CursorConfig as WireCursorConfig,
@@ -2304,7 +2305,9 @@ impl RuntimeConfig {
         })
     }
 
-    pub fn from_snapshot(snapshot: &Snapshot, labels: Option<&RuntimeConfig>) -> Self {
+    /// Fails rather than exporting a file that would not reproduce the
+    /// keyboard: applying it back would overwrite whatever it misspelled.
+    pub fn from_snapshot(snapshot: &Snapshot, labels: Option<&RuntimeConfig>) -> Result<Self> {
         let behavior = BehaviorConfig::from_snapshot(&snapshot.behaviors);
         let profile_names = profile_names_by_slot(
             snapshot
@@ -2313,7 +2316,16 @@ impl RuntimeConfig {
                 .as_deref()
                 .unwrap_or_default(),
         );
-        let layers = snapshot.layers[..used_layer_count(snapshot)]
+        let used_layers = used_layer_count(snapshot);
+        let lost = unexportable_actions(snapshot, used_layers, &profile_names);
+        if !lost.is_empty() {
+            bail!(
+                "the runtime TOML cannot express every action the keyboard holds, and an \
+                 export would lose:\n  {}",
+                lost.join("\n  ")
+            );
+        }
+        let layers = snapshot.layers[..used_layers]
             .iter()
             .enumerate()
             .map(|(index, keys)| {
@@ -2345,7 +2357,7 @@ impl RuntimeConfig {
                 }
             })
             .collect();
-        Self {
+        Ok(Self {
             rows: snapshot.rows,
             cols: snapshot.cols,
             bluetooth_name: snapshot.bluetooth_name.clone(),
@@ -2420,7 +2432,7 @@ impl RuntimeConfig {
                 .lighting
                 .as_ref()
                 .map(LightingConfig::from_snapshot),
-        }
+        })
     }
 
     pub fn to_toml(&self) -> Result<String> {
@@ -2896,7 +2908,10 @@ impl ComboConfig {
                 combo
                     .actions
                     .iter()
-                    .map(|action| render_key_action(*action, profile_names))
+                    .map(|action| {
+                        key_action_token(*action, profile_names)
+                            .unwrap_or_else(|| render_key_action(*action, profile_names))
+                    })
                     .collect(),
                 Vec::new(),
                 combo.output,
@@ -3764,13 +3779,17 @@ pub fn render_key_actions_for_matrix(
                 text.push(' ');
             }
             let action = keys[row * usize::from(cols_count) + col];
-            text.push_str(&render_key_action(action, profile_names).replace(", ", ","));
+            let token = key_action_token(action, profile_names)
+                .unwrap_or_else(|| render_key_action(action, profile_names));
+            text.push_str(&token.replace(", ", ","));
         }
         text.push('\n');
     }
     text
 }
 
+/// A human-readable spelling for an action, which need not parse back to it.
+/// An export wants [`key_action_token`].
 fn render_key_action(action: KeyAction, profile_names: &[String]) -> String {
     let KeyAction::TapHold(tap, hold, profile) = action else {
         let code = crate::rynk_keycode::to_via_keycode(action);
@@ -3795,11 +3814,146 @@ fn render_key_action(action: KeyAction, profile_names: &[String]) -> String {
     }
 }
 
+/// Actions the firmware does not tell apart: a consumer or system key and its
+/// HID alias, the only name the keycode table has for either.
+fn canonical_action(action: Action) -> Action {
+    let hid = match action {
+        Action::Key(KeyCode::Consumer(key)) => key.to_hid_keycode(),
+        Action::Key(KeyCode::SystemControl(key)) => key.to_hid_keycode(),
+        _ => None,
+    };
+    hid.map_or(action, |key| Action::Key(KeyCode::Hid(key)))
+}
+
+fn canonical_key_action(action: KeyAction) -> KeyAction {
+    match action {
+        KeyAction::Single(action) => KeyAction::Single(canonical_action(action)),
+        KeyAction::Tap(action) => KeyAction::Tap(canonical_action(action)),
+        KeyAction::TapHold(tap, hold, profile) => {
+            KeyAction::TapHold(canonical_action(tap), canonical_action(hold), profile)
+        }
+        other => other,
+    }
+}
+
+/// Whether writing `parsed` to the keyboard would leave it holding `live`.
+fn reproduces(parsed: KeyAction, live: KeyAction) -> bool {
+    same_key_action(canonical_key_action(parsed), canonical_key_action(live))
+}
+
+/// The `keys` token that parses back to `action`, when the format has one.
+///
+/// `to_via_keycode` answers 0 for an action outside the VIA encoding and
+/// truncates an argument too wide for its field. Either result formats as a
+/// valid token for some other action, so only parsing it back tells them apart.
+fn key_action_token(action: KeyAction, profile_names: &[String]) -> Option<String> {
+    let parses_back = |token: &str| {
+        parse_key_action(token, profile_names).is_ok_and(|parsed| reproduces(parsed, action))
+    };
+    let named = render_key_action(action, profile_names);
+    if parses_back(&named) {
+        return Some(named);
+    }
+    // A tap-hold on the default profile has no profile to name, which leaves
+    // the VIA spelling as the one that parses.
+    let via = crate::keycodes::format_keycode(crate::rynk_keycode::to_via_keycode(action));
+    (matches!(action, KeyAction::TapHold(..)) && parses_back(&via)).then_some(via)
+}
+
+/// Whether the keycode name a behavior table spells `action` with parses back.
+fn keycode_parses_back(action: KeyAction) -> bool {
+    let name = crate::keycodes::format_keycode(crate::rynk_keycode::to_via_keycode(action));
+    crate::keycodes::parse_keycode(&name)
+        .is_ok_and(|code| reproduces(crate::rynk_keycode::from_via_keycode(code), action))
+}
+
+/// Every action an export of `snapshot` has no spelling for, by where it sits.
+fn unexportable_actions(
+    snapshot: &Snapshot,
+    used_layers: usize,
+    profile_names: &[String],
+) -> Vec<String> {
+    use rynk::rmk_types::morse::{DOUBLE_TAP, HOLD, HOLD_AFTER_TAP, TAP};
+
+    let mut lost = Vec::new();
+    let mut check = |spelled: bool, action: KeyAction, place: String| {
+        if !spelled {
+            lost.push(format!("{place}: {action:?}"));
+        }
+    };
+    let key = |action| key_action_token(action, profile_names).is_some();
+
+    let cols = usize::from(snapshot.cols).max(1);
+    for (layer, keys) in snapshot.layers[..used_layers].iter().enumerate() {
+        for (offset, &action) in keys.iter().enumerate() {
+            let (row, col) = (offset / cols, offset % cols);
+            check(key(action), action, format!("layer {layer} r{row},c{col}"));
+        }
+    }
+
+    let behaviors = &snapshot.behaviors;
+    let morses = used_slots(behaviors.morses.as_deref().unwrap_or_default(), |morse| {
+        morse.actions.is_empty()
+    });
+    for (index, morse) in morses.iter().enumerate() {
+        for (pattern, field) in [
+            (TAP, "tap"),
+            (HOLD, "hold"),
+            (DOUBLE_TAP, "double_tap"),
+            (HOLD_AFTER_TAP, "hold_after_tap"),
+        ] {
+            // `MorseConfig` reads an absent action and `Action::No` alike.
+            if let Some(action) = morse.get(pattern).filter(|action| *action != Action::No) {
+                let action = KeyAction::Single(action);
+                check(
+                    keycode_parses_back(action),
+                    action,
+                    format!("morse {index} {field}"),
+                );
+            }
+        }
+    }
+    let combos = used_slots(
+        behaviors.combos.as_deref().unwrap_or_default(),
+        ComboDefinition::is_empty,
+    );
+    for (index, combo) in combos.iter().enumerate() {
+        if let ComboDefinition::Actions(combo) = combo {
+            for (position, &action) in combo.actions.iter().enumerate() {
+                check(key(action), action, format!("combo {index} key {position}"));
+            }
+        }
+        let output = combo.output();
+        check(
+            keycode_parses_back(output),
+            output,
+            format!("combo {index} output"),
+        );
+    }
+    let forks = used_slots(
+        behaviors.forks.as_deref().unwrap_or_default(),
+        is_empty_fork,
+    );
+    for (index, fork) in forks.iter().enumerate() {
+        for (action, field) in [(fork.trigger, "trigger"), (fork.positive_output, "output")] {
+            check(
+                keycode_parses_back(action),
+                action,
+                format!("fork {index} {field}"),
+            );
+        }
+    }
+    lost
+}
+
 pub fn action_to_code(action: KeyAction, layer: usize, offset: usize) -> Result<u16> {
     let code = crate::rynk_keycode::to_via_keycode(action);
-    if code == 0 && !matches!(action, KeyAction::No) {
+    // A VIA keycode carries no tap-hold profile, so one is not compared.
+    if canonical_key_action(crate::rynk_keycode::from_via_keycode(code))
+        != canonical_key_action(action)
+    {
         bail!(
-            "action {action:?} at layer {layer} r{},c{} cannot be represented in runtime TOML",
+            "action {action:?} at layer {layer} r{},c{} has no VIA keycode for a MoErgo layout",
             offset / usize::from(COLS),
             offset % usize::from(COLS)
         );
@@ -5440,14 +5594,20 @@ color = "#0000ff"
         let mut snapshot = previous.snapshot().unwrap();
         snapshot.layer_names = Some(vec![layer_metadata(0, "Alpha").unwrap()]);
         assert_eq!(
-            RuntimeConfig::from_snapshot(&snapshot, Some(&previous)).layers[0].name,
+            RuntimeConfig::from_snapshot(&snapshot, Some(&previous))
+                .unwrap()
+                .layers[0]
+                .name,
             "Alpha"
         );
 
         // Firmware without the endpoint leaves the label the file already had.
         snapshot.layer_names = None;
         assert_eq!(
-            RuntimeConfig::from_snapshot(&snapshot, Some(&previous)).layers[0].name,
+            RuntimeConfig::from_snapshot(&snapshot, Some(&previous))
+                .unwrap()
+                .layers[0]
+                .name,
             "Base"
         );
     }
@@ -5704,13 +5864,111 @@ primary_button = 2
             rynk::rmk_types::fork::Fork::default(),
         ]);
 
-        let exported = RuntimeConfig::from_snapshot(&snapshot, None);
+        let exported = RuntimeConfig::from_snapshot(&snapshot, None).unwrap();
         assert_eq!(exported.layers.len(), 2, "the all-No layer was trimmed");
         assert_eq!(exported.morses.len(), 2);
         assert_eq!(exported.combos.len(), 2);
         assert_eq!(exported.forks.len(), 2);
         RuntimeConfig::from_toml(&exported.to_toml().unwrap())
             .expect("a canonical export must validate");
+    }
+
+    /// A keyboard with one named tap-hold profile and three layer slots.
+    fn live_with_a_profile() -> Snapshot {
+        let mut config = minimal_runtime_config(None);
+        let mut behavior = BehaviorConfig::default();
+        behavior
+            .morse
+            .profiles
+            .insert("hrm".to_owned(), MorseProfileConfig::default());
+        config.behavior = Some(behavior);
+        live_snapshot(&config, 3)
+    }
+
+    #[test]
+    fn export_refuses_actions_the_file_cannot_spell() {
+        use rynk::rmk_types::keycode::HidKeyCode;
+
+        let a = Action::Key(KeyCode::Hid(HidKeyCode::A));
+        let mut live = live_with_a_profile();
+        live.layers[0][2] = KeyAction::Single(Action::Unicode(0x00e9));
+        live.layers[0][3] = KeyAction::Single(a);
+        live.layers[1][20] = KeyAction::Single(Action::OneShotKey(HidKeyCode::A));
+        // Each of these formats as a valid token for a different action:
+        // `MO(4)`, and an `LT` on the default profile.
+        live.layers[1][21] = KeyAction::Single(Action::LayerOn(20));
+        live.layers[1][22] = KeyAction::TapHold(a, Action::LayerOn(2), 5);
+        live.behaviors.combos = Some(vec![ComboDefinition::Actions(Combo {
+            actions: [action("KC_A"), action("KC_B")].into_iter().collect(),
+            output: KeyAction::Single(Action::Unicode(0x00e9)),
+            layers: ALL_COMBO_LAYERS,
+        })]);
+
+        let error = RuntimeConfig::from_snapshot(&live, None)
+            .unwrap_err()
+            .to_string();
+        assert_eq!(
+            error.lines().skip(1).collect::<Vec<_>>(),
+            [
+                "  layer 0 r0,c2: Single(Unicode(233))",
+                "  layer 1 r1,c6: Single(OneShotKey(A))",
+                "  layer 1 r1,c7: Single(LayerOn(20))",
+                "  layer 1 r1,c8: TapHold(Key(Hid(A)), LayerOn(2), 5)",
+                "  combo 0 output: Single(Unicode(233))",
+            ],
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn export_spells_representable_actions_so_they_parse_back() {
+        use rynk::rmk_types::keycode::{ConsumerKey, HidKeyCode};
+        use rynk::rmk_types::modifier::ModifierCombination;
+
+        let a = Action::Key(KeyCode::Hid(HidKeyCode::A));
+        let ctrl = Action::Modifier(ModifierCombination::LCTRL);
+        let keys = [
+            KeyAction::No,
+            KeyAction::Transparent,
+            KeyAction::Single(a),
+            KeyAction::Single(Action::OneShotLayer(2)),
+            // The default profile has no name for `MT(.., .., profile)`.
+            KeyAction::TapHold(a, ctrl, u8::MAX),
+            KeyAction::TapHold(a, Action::LayerOn(2), u8::MAX),
+            KeyAction::TapHold(a, ctrl, 0),
+            KeyAction::TapHold(a, Action::LayerOn(2), 0),
+            KeyAction::TapHold(
+                a,
+                Action::KeyWithModifier(HidKeyCode::A, ModifierCombination::LSHIFT),
+                0,
+            ),
+        ];
+        let mut live = live_with_a_profile();
+        live.layers[0][9..9 + keys.len()].copy_from_slice(&keys);
+
+        let reload = |live: &Snapshot| {
+            let exported = RuntimeConfig::from_snapshot(live, None).unwrap();
+            RuntimeConfig::from_toml(&exported.to_toml().unwrap())
+                .unwrap()
+                .snapshot()
+                .unwrap()
+        };
+        let reloaded = reload(&live);
+        for (offset, (&parsed, &held)) in reloaded.layers[0].iter().zip(&live.layers[0]).enumerate()
+        {
+            assert!(
+                same_key_action(parsed, held),
+                "offset {offset}: {parsed:?} != {held:?}"
+            );
+        }
+
+        // The firmware runs a consumer key and its HID alias identically, and
+        // the alias is the only name the file has for either.
+        live.layers[0][9] = KeyAction::Single(Action::Key(KeyCode::Consumer(ConsumerKey::Mute)));
+        assert_eq!(
+            reload(&live).layers[0][9],
+            KeyAction::Single(Action::Key(KeyCode::Hid(HidKeyCode::AudioMute)))
+        );
     }
 
     /// What a keyboard reports for a file: every physical slot, the spare
@@ -5786,7 +6044,7 @@ primary_button = 2
         let source = RuntimeConfig::from_toml(text).unwrap();
         let live = live_snapshot(&source, 8);
 
-        let exported = RuntimeConfig::from_snapshot(&live, None);
+        let exported = RuntimeConfig::from_snapshot(&live, None).unwrap();
         assert_eq!(
             exported
                 .layers
@@ -5804,7 +6062,7 @@ primary_button = 2
         // Firmware that stores no names still holds the overrides.
         let mut unnamed = live.clone();
         unnamed.layer_names = None;
-        let exported = RuntimeConfig::from_snapshot(&unnamed, None);
+        let exported = RuntimeConfig::from_snapshot(&unnamed, None).unwrap();
         assert_eq!(exported.layers.len(), 3);
         RuntimeConfig::from_toml(&exported.to_toml().unwrap())
             .unwrap()
@@ -5816,8 +6074,12 @@ primary_button = 2
     fn export_keeps_a_transparent_layer_only_while_the_keyboard_uses_it() {
         let mut config = minimal_runtime_config(None);
         config.layers.push(transparent_layer("held", "Held"));
-        let exported_layers =
-            |snapshot: &Snapshot| RuntimeConfig::from_snapshot(snapshot, None).layers.len();
+        let exported_layers = |snapshot: &Snapshot| {
+            RuntimeConfig::from_snapshot(snapshot, None)
+                .unwrap()
+                .layers
+                .len()
+        };
 
         let named = live_snapshot(&config, 4);
         assert_eq!(exported_layers(&named), 2, "an occupied name slot");
@@ -5827,6 +6089,7 @@ primary_button = 2
         assert_eq!(exported_layers(&spare), 1, "nothing addresses layer 1");
         assert_eq!(
             RuntimeConfig::from_snapshot(&spare, Some(&config))
+                .unwrap()
                 .layers
                 .len(),
             1,
@@ -5903,7 +6166,7 @@ primary_button = 2
             ]),
         );
 
-        let rebuilt = RuntimeConfig::from_snapshot(&snapshot, Some(&config));
+        let rebuilt = RuntimeConfig::from_snapshot(&snapshot, Some(&config)).unwrap();
         let morse = &rebuilt.behavior.unwrap().morse;
         assert_eq!(morse.hold_trigger_key_positions, vec![[2, 8], [3, 9]]);
         assert_eq!(
@@ -5946,6 +6209,7 @@ primary_button = 2
         );
 
         let text = RuntimeConfig::from_snapshot(&snapshot, None)
+            .unwrap()
             .to_toml()
             .unwrap();
         assert!(text.contains("[behavior.morse.profiles.alpha]"));
@@ -6606,7 +6870,7 @@ Density = 6
             )),
             pointing: None,
         };
-        let mut config = RuntimeConfig::from_snapshot(&snapshot, None);
+        let mut config = RuntimeConfig::from_snapshot(&snapshot, None).unwrap();
         config.retain_non_default_params(&snapshot);
         let lighting = config.lighting.unwrap();
         assert_eq!(params_of(&lighting, "Rain", "Density"), Some(6));
@@ -6629,7 +6893,7 @@ Density = 6
             )),
             pointing: None,
         };
-        let mut config = RuntimeConfig::from_snapshot(&snapshot, None);
+        let mut config = RuntimeConfig::from_snapshot(&snapshot, None).unwrap();
         config.retain_non_default_params(&snapshot);
         assert!(config.lighting.unwrap().effects.unwrap().params.is_empty());
     }

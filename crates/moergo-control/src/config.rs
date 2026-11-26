@@ -311,27 +311,12 @@ pub async fn operate(client: &Client, command: &ConfigCommand, serial: Option<&s
         ConfigCommand::Validate { .. } => unreachable!("validate is offline"),
         ConfigCommand::Show { format } => {
             let snapshot = read_snapshot(client).await?;
-            let config = RuntimeConfig::from_snapshot(&snapshot, None);
+            let config = RuntimeConfig::from_snapshot(&snapshot, None)?;
             print!("{}", render(&config, &snapshot, *format, None)?);
         }
         ConfigCommand::Pull { file, format } => {
             let snapshot = read_snapshot(client).await?;
-            let old_text = std::fs::read_to_string(file).ok();
-            let inferred = format.unwrap_or_else(|| file_format(file, old_text.as_deref()));
-            let labels = old_text
-                .as_deref()
-                .and_then(|text| parse_text(text, file_format(file, Some(text))).ok());
-            let mut config = RuntimeConfig::from_snapshot(&snapshot, labels.as_ref());
-            if let Some(previous) = labels.as_ref() {
-                config.retain_bluetooth_names(previous, serial)?;
-            }
-            config.retain_non_default_params(&snapshot);
-            let template = (inferred == ConfigFormat::MoergoJson)
-                .then_some(old_text.as_deref())
-                .flatten();
-            let text = render(&config, &snapshot, inferred, template)?;
-            std::fs::write(file, text)
-                .with_context(|| format!("could not write {}", file.display()))?;
+            write_pulled(&snapshot, file, *format, serial)?;
             println!("pulled live runtime configuration into {}", file.display());
         }
         ConfigCommand::Diff { file, exact } => {
@@ -377,6 +362,32 @@ pub async fn operate(client: &Client, command: &ConfigCommand, serial: Option<&s
         }
     }
     Ok(())
+}
+
+/// Replace `file` with the keyboard's state. The whole document is rendered
+/// before the file is opened for writing, so a failed export leaves it alone.
+fn write_pulled(
+    snapshot: &Snapshot,
+    file: &Path,
+    format: Option<ConfigFormat>,
+    serial: Option<&str>,
+) -> Result<()> {
+    let old_text = std::fs::read_to_string(file).ok();
+    let inferred = format.unwrap_or_else(|| file_format(file, old_text.as_deref()));
+    let labels = old_text
+        .as_deref()
+        .and_then(|text| parse_text(text, file_format(file, Some(text))).ok());
+    let mut config = RuntimeConfig::from_snapshot(snapshot, labels.as_ref())
+        .with_context(|| format!("{} was left unchanged", file.display()))?;
+    if let Some(previous) = labels.as_ref() {
+        config.retain_bluetooth_names(previous, serial)?;
+    }
+    config.retain_non_default_params(snapshot);
+    let template = (inferred == ConfigFormat::MoergoJson)
+        .then_some(old_text.as_deref())
+        .flatten();
+    let text = render(&config, snapshot, inferred, template)?;
+    std::fs::write(file, text).with_context(|| format!("could not write {}", file.display()))
 }
 
 async fn read_snapshot(client: &Client) -> Result<Snapshot> {
@@ -1787,6 +1798,36 @@ mod tests {
         let wanted = vec![tap_hold(1), action(4)];
         assert_eq!(wanted, present, "`==` alone cannot tell these apart");
         assert_eq!(changed_rows(&wanted, &present, 2), vec![0..2]);
+    }
+
+    #[test]
+    fn a_pull_that_cannot_export_leaves_the_file_alone() {
+        use rynk::rmk_types::action::{Action, KeyAction};
+
+        let existing = "rows = 1\ncols = 2\n\n[[layer]]\nid = \"base\"\nname = \"Base\"\n\
+                        keys = \"KC_A KC_B\"\n";
+        let file = std::env::temp_dir().join(format!("moergo-pull-{}.toml", std::process::id()));
+        std::fs::write(&file, existing).unwrap();
+        let mut live = parse(&file).unwrap().snapshot().unwrap();
+
+        live.layers[0][1] = KeyAction::Single(Action::Unicode(0x00e9));
+        let refused = write_pulled(&live, &file, None, None).map_err(|error| format!("{error:#}"));
+        let kept = std::fs::read_to_string(&file).unwrap();
+
+        live.layers[0][1] = action(5);
+        let pulled = write_pulled(&live, &file, None, None);
+        let written = std::fs::read_to_string(&file).unwrap();
+        std::fs::remove_file(&file).unwrap();
+
+        let refused = refused.unwrap_err();
+        assert!(refused.contains("was left unchanged"), "{refused}");
+        assert!(
+            refused.contains("layer 0 r0,c1: Single(Unicode(233))"),
+            "{refused}"
+        );
+        assert_eq!(kept, existing);
+        pulled.unwrap();
+        assert_ne!(written, existing, "a representable keymap is still pulled");
     }
 
     #[test]
