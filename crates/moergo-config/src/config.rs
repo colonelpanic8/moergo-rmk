@@ -2313,9 +2313,7 @@ impl RuntimeConfig {
                 .as_deref()
                 .unwrap_or_default(),
         );
-        let mut snapshot_layers = snapshot.layers.clone();
-        trim_trailing_transparent_layers(&mut snapshot_layers);
-        let layers = snapshot_layers
+        let layers = snapshot.layers[..used_layer_count(snapshot)]
             .iter()
             .enumerate()
             .map(|(index, keys)| {
@@ -4416,19 +4414,110 @@ pub fn scene_policy_to_wire(policy: ScenePolicyConfig) -> LightingLayerPolicy {
     }
 }
 
+/// How many leading layer slots a keyboard actually uses.
+///
 /// RMK gives every layer slot its fixed capacity and initializes the unused
-/// ones as transparent. `No` is intentionally not empty: an all-`No` layer
-/// blocks fallback and must survive an export/reapply cycle.
-pub fn trim_trailing_transparent_layers(layers: &mut Vec<Vec<KeyAction>>) {
-    while layers.len() > 1
-        && layers.last().is_some_and(|layer| {
-            layer
+/// ones as transparent, so a transparent tail is spare capacity unless the
+/// keyboard names or addresses it: a transparent layer still does its work by
+/// being active, for whatever keys off its index. `No` is intentionally not
+/// empty: an all-`No` layer blocks fallback and must survive an export/reapply
+/// cycle.
+fn used_layer_count(snapshot: &Snapshot) -> usize {
+    let keyed = snapshot.layers.iter().rposition(|layer| {
+        layer
+            .iter()
+            .any(|action| !matches!(action, KeyAction::Transparent))
+    });
+    let named = snapshot
+        .layer_names
+        .as_ref()
+        .and_then(|names| names.iter().rposition(|slot| slot.occupied));
+    let addressed = addressed_layers(snapshot)
+        .into_iter()
+        .max()
+        .map(usize::from);
+    [keyed, named, addressed]
+        .into_iter()
+        .flatten()
+        .max()
+        .map_or(1, |last| last + 1)
+        .min(snapshot.layers.len())
+}
+
+/// Every layer index a keyboard's state refers to, in no particular order.
+fn addressed_layers(snapshot: &Snapshot) -> Vec<u8> {
+    let behaviors = &snapshot.behaviors;
+    let mut layers = vec![snapshot.default_layer];
+    let outputs = snapshot
+        .layers
+        .iter()
+        .flatten()
+        .copied()
+        .chain(
+            behaviors
+                .combos
                 .iter()
-                .all(|action| matches!(action, KeyAction::Transparent))
-        })
-    {
-        layers.pop();
+                .flatten()
+                .map(ComboDefinition::output),
+        )
+        .chain(
+            behaviors
+                .forks
+                .iter()
+                .flatten()
+                .flat_map(|fork| [fork.negative_output, fork.positive_output]),
+        );
+    layers.extend(outputs.flat_map(key_action_layers));
+    let morse_actions = behaviors
+        .morses
+        .iter()
+        .flatten()
+        .flat_map(|morse| morse.actions.values().copied());
+    layers.extend(morse_actions.filter_map(action_layer));
+    if let Some(options) = &behaviors.options {
+        layers.extend(options.tri_layer.into_iter().flatten());
     }
+    let auto_mouse = behaviors.auto_mouse_layers.iter().flatten();
+    layers.extend(auto_mouse.map(|config| config.target_layer));
+    if let Some(pointing) = &snapshot.pointing {
+        layers.extend(pointing.overrides().iter().map(|entry| entry.layer));
+    }
+    if let Some(lighting) = &snapshot.lighting {
+        layers.extend(&lighting.wake_layers);
+        layers.extend(lighting.scenes.iter().map(|scene| scene.layer));
+        for rule in lighting.conditional_scenes.iter().flatten() {
+            if let Some(set) = &rule.layers {
+                layers.extend(set.active.iter().chain(&set.inactive));
+            }
+            layers.extend(rule.layer.iter().map(|gate| gate.layer));
+        }
+    }
+    layers
+}
+
+/// The layer an action switches, when it names one.
+fn action_layer(action: Action) -> Option<u8> {
+    match action {
+        Action::LayerOn(layer)
+        | Action::LayerOnWithModifier(layer, _)
+        | Action::LayerOff(layer)
+        | Action::LayerToggle(layer)
+        | Action::LayerToggleOnly(layer)
+        | Action::DefaultLayer(layer)
+        | Action::PersistentDefaultLayer(layer)
+        | Action::OneShotLayer(layer) => Some(layer),
+        _ => None,
+    }
+}
+
+fn key_action_layers(action: KeyAction) -> impl Iterator<Item = u8> {
+    let (first, second) = match action {
+        KeyAction::Single(action) | KeyAction::Tap(action) => (action_layer(action), None),
+        KeyAction::TapHold(tap, hold, _) => (action_layer(tap), action_layer(hold)),
+        KeyAction::LayerModTap(layer, ..) => (Some(layer), None),
+        _ => (None, None),
+    };
+    first.into_iter().chain(second)
 }
 
 /// The file speaks in effect and palette *names*; the protocol speaks in
@@ -5622,6 +5711,155 @@ primary_button = 2
         assert_eq!(exported.forks.len(), 2);
         RuntimeConfig::from_toml(&exported.to_toml().unwrap())
             .expect("a canonical export must validate");
+    }
+
+    /// What a keyboard reports for a file: every physical slot, the spare
+    /// ones transparent and vacant.
+    fn live_snapshot(config: &RuntimeConfig, capacity: usize) -> Snapshot {
+        let mut snapshot = config.snapshot().unwrap();
+        let layer_size = usize::from(snapshot.rows) * usize::from(snapshot.cols);
+        snapshot
+            .layers
+            .resize(capacity, vec![KeyAction::Transparent; layer_size]);
+        snapshot
+            .layer_names
+            .as_mut()
+            .unwrap()
+            .resize(capacity, LayerMetadata::vacant());
+        snapshot
+    }
+
+    fn transparent_layer(id: &str, name: &str) -> LayerConfig {
+        LayerConfig {
+            id: id.into(),
+            name: name.into(),
+            keys: String::new(),
+            key_entries: Vec::new(),
+            light_entries: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn export_keeps_transparent_layers_that_pointing_overrides_address() {
+        let text = r#"
+rows = 5
+default_layer = 0
+
+[[layer]]
+id = "base"
+name = "Base"
+keys = """
+-- -- -- -- -- -- -- -- -- -- -- -- -- --
+-- -- -- -- -- -- -- -- -- -- -- -- -- --
+-- -- -- -- -- -- -- -- -- -- -- -- -- --
+-- -- -- -- -- -- -- -- -- -- -- -- -- --
+-- -- -- -- -- -- -- -- -- -- -- -- -- --
+"""
+
+[[layer]]
+id = "zoom"
+name = "Pointer Zoom"
+
+[[layer]]
+id = "right_click"
+name = "Right Click"
+
+[pointing]
+
+[[pointing.device]]
+device_id = 1
+mode = "cursor"
+
+[[pointing.override]]
+layer = 1
+device_id = 1
+mode = "cursor"
+multiplier_x = 6
+multiplier_y = 6
+
+[[pointing.override]]
+layer = 2
+device_id = 1
+mode = "cursor"
+primary_button = 2
+"#;
+        let source = RuntimeConfig::from_toml(text).unwrap();
+        let live = live_snapshot(&source, 8);
+
+        let exported = RuntimeConfig::from_snapshot(&live, None);
+        assert_eq!(
+            exported
+                .layers
+                .iter()
+                .map(|layer| layer.name.as_str())
+                .collect::<Vec<_>>(),
+            ["Base", "Pointer Zoom", "Right Click"],
+        );
+        let reloaded = RuntimeConfig::from_toml(&exported.to_toml().unwrap())
+            .expect("an export must parse")
+            .snapshot()
+            .expect("an export must pass the validation apply runs");
+        assert_eq!(differences(&reloaded, &live), Vec::<String>::new());
+
+        // Firmware that stores no names still holds the overrides.
+        let mut unnamed = live.clone();
+        unnamed.layer_names = None;
+        let exported = RuntimeConfig::from_snapshot(&unnamed, None);
+        assert_eq!(exported.layers.len(), 3);
+        RuntimeConfig::from_toml(&exported.to_toml().unwrap())
+            .unwrap()
+            .snapshot()
+            .expect("an export must pass the validation apply runs");
+    }
+
+    #[test]
+    fn export_keeps_a_transparent_layer_only_while_the_keyboard_uses_it() {
+        let mut config = minimal_runtime_config(None);
+        config.layers.push(transparent_layer("held", "Held"));
+        let exported_layers =
+            |snapshot: &Snapshot| RuntimeConfig::from_snapshot(snapshot, None).layers.len();
+
+        let named = live_snapshot(&config, 4);
+        assert_eq!(exported_layers(&named), 2, "an occupied name slot");
+
+        let mut spare = named.clone();
+        spare.layer_names.as_mut().unwrap()[1] = LayerMetadata::vacant();
+        assert_eq!(exported_layers(&spare), 1, "nothing addresses layer 1");
+        assert_eq!(
+            RuntimeConfig::from_snapshot(&spare, Some(&config))
+                .layers
+                .len(),
+            1,
+            "a previous file labels layers; it does not keep them",
+        );
+
+        let mut switched = spare.clone();
+        switched.layers[0][0] = action("MO(1)");
+        assert_eq!(exported_layers(&switched), 2, "a key switches to it");
+        switched.layers[0][0] = action("LT(3,KC_A)");
+        assert_eq!(exported_layers(&switched), 4, "interior layers keep slots");
+
+        let mut default = spare.clone();
+        default.default_layer = 1;
+        assert_eq!(exported_layers(&default), 2, "the default layer");
+
+        let mut combo = spare.clone();
+        combo.behaviors.combos = Some(vec![ComboDefinition::Actions(Combo {
+            actions: [action("KC_A"), action("KC_B")].into_iter().collect(),
+            output: action("TG(2)"),
+            layers: ALL_COMBO_LAYERS,
+        })]);
+        assert_eq!(exported_layers(&combo), 3, "a combo switches to it");
+
+        let mut lit = spare.clone();
+        lit.lighting = Some(lighting_snapshot(None, None));
+        lit.lighting.as_mut().unwrap().wake_layers = vec![1];
+        assert_eq!(exported_layers(&lit), 2, "a lighting wake layer");
+
+        // A reference past the keyboard's capacity cannot conjure a layer.
+        let mut dangling = spare;
+        dangling.layers[0][0] = action("MO(9)");
+        assert_eq!(exported_layers(&dangling), 4);
     }
 
     #[test]
