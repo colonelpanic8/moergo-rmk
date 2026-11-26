@@ -3896,14 +3896,22 @@ fn unexportable_actions(
         morse.actions.is_empty()
     });
     for (index, morse) in morses.iter().enumerate() {
-        for (pattern, field) in [
-            (TAP, "tap"),
-            (HOLD, "hold"),
-            (DOUBLE_TAP, "double_tap"),
-            (HOLD_AFTER_TAP, "hold_after_tap"),
-        ] {
-            // `MorseConfig` reads an absent action and `Action::No` alike.
-            if let Some(action) = morse.get(pattern).filter(|action| *action != Action::No) {
+        for (&pattern, &action) in morse.actions.iter() {
+            let field = match pattern {
+                TAP => "tap",
+                HOLD => "hold",
+                DOUBLE_TAP => "double_tap",
+                HOLD_AFTER_TAP => "hold_after_tap",
+                _ => {
+                    check(
+                        false,
+                        KeyAction::Single(action),
+                        format!("morse {index} pattern {:#b}", pattern.to_u16()),
+                    );
+                    continue;
+                }
+            };
+            if action != Action::No {
                 let action = KeyAction::Single(action);
                 check(
                     keycode_parses_back(action),
@@ -3935,6 +3943,11 @@ fn unexportable_actions(
         is_empty_fork,
     );
     for (index, fork) in forks.iter().enumerate() {
+        check(
+            reproduces(fork.trigger, fork.negative_output),
+            fork.negative_output,
+            format!("fork {index} negative output"),
+        );
         for (action, field) in [(fork.trigger, "trigger"), (fork.positive_output, "output")] {
             check(
                 keycode_parses_back(action),
@@ -5858,6 +5871,7 @@ primary_button = 2
             rynk::rmk_types::fork::Fork::default(),
             rynk::rmk_types::fork::Fork {
                 trigger: KeyAction::Single(a),
+                negative_output: KeyAction::Single(a),
                 positive_output: KeyAction::Single(b),
                 ..Default::default()
             },
@@ -5904,6 +5918,18 @@ primary_button = 2
             layers: ALL_COMBO_LAYERS,
         })]);
 
+        let mut morse = Morse::default();
+        morse
+            .put(rynk::rmk_types::morse::DOUBLE_TAP.followed_by_tap(), a)
+            .unwrap();
+        live.behaviors.morses = Some(vec![morse]);
+        live.behaviors.forks = Some(vec![rynk::rmk_types::fork::Fork {
+            trigger: action("KC_B"),
+            negative_output: KeyAction::Single(a),
+            positive_output: action("KC_C"),
+            ..Default::default()
+        }]);
+
         let error = RuntimeConfig::from_snapshot(&live, None)
             .unwrap_err()
             .to_string();
@@ -5914,7 +5940,9 @@ primary_button = 2
                 "  layer 1 r1,c6: Single(OneShotKey(A))",
                 "  layer 1 r1,c7: Single(LayerOn(20))",
                 "  layer 1 r1,c8: TapHold(Key(Hid(A)), LayerOn(2), 5)",
+                "  morse 0 pattern 0b1000: Single(Key(Hid(A)))",
                 "  combo 0 output: Single(Unicode(233))",
+                "  fork 0 negative output: Single(Key(Hid(A)))",
             ],
             "{error}"
         );
